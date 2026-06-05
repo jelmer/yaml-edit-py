@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Jelmer Vernooĳ <jelmer@debian.org>"]
 license = "Apache-2.0"
 description = "Python bindings for the yaml-edit lossless YAML parser and editor"
-repository = "https://github.com/jelmer/yaml-edit"
+repository = "https://github.com/jelmer/yaml-edit-py"
 publish = false
 
 [lib]
