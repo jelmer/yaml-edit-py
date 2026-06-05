@@ -34,3 +34,19 @@ binding = "PyO3"
 
 [tool.setuptools.package-data]
 yaml_edit = ["py.typed", "*.pyi"]
+
+[tool.cibuildwheel]
+# PyPy ships no Rust toolchain by default and the extension targets CPython.
+# musllinux is skipped: no prebuilt Rust for the musl i686 target.
+skip = "pp* *-musllinux*"
+build-frontend = "build"
+test-command = "python -m unittest discover -s {project}/tests"
+
+[tool.cibuildwheel.linux]
+# manylinux containers have no Rust; install rustup before building.
+before-all = "curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal"
+environment = { PATH = "$HOME/.cargo/bin:$PATH" }
+
+[tool.cibuildwheel.macos]
+# Rust requires macOS 10.12+; cibuildwheel otherwise defaults lower.
+environment = { MACOSX_DEPLOYMENT_TARGET = "10.12" }
