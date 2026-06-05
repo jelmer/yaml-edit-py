@@ -119,6 +119,15 @@ class MappingTests(unittest.TestCase):
         doc = Document.parse("a: 1\nb: 2\n")
         self.assertEqual({k for k in doc.as_mapping()}, {"a", "b"})
 
+    def test_iter_returns_self(self):
+        doc = Document.parse("a: 1\nb: 2\n")
+        it = iter(doc.as_mapping())
+        self.assertIs(iter(it), it)
+        self.assertEqual(next(it), "a")
+        self.assertEqual(next(it), "b")
+        with self.assertRaises(StopIteration):
+            next(it)
+
 
 class MappingEntryTests(unittest.TestCase):
     def test_entries_expose_each_pair(self):
@@ -173,6 +182,11 @@ class MappingEntryTests(unittest.TestCase):
         entry = doc.as_mapping().find_entry("a")
         self.assertTrue(entry.key_matches("a"))
 
+    def test_repr(self):
+        doc = Document.parse("a: 1\n")
+        entry = doc.as_mapping().find_entry("a")
+        self.assertEqual(repr(entry), '<yaml_edit.Entry key="a">')
+
 
 class SequenceTests(unittest.TestCase):
     def test_as_sequence_and_indexing(self):
@@ -212,6 +226,15 @@ class SequenceTests(unittest.TestCase):
         doc = Document.parse("- 1\n- 2\n- 3\n")
         seq = doc.as_sequence()
         self.assertEqual([n.as_int() for n in seq], [1, 2, 3])
+
+    def test_iter_returns_self(self):
+        doc = Document.parse("- 1\n- 2\n")
+        it = iter(doc.as_sequence())
+        self.assertIs(iter(it), it)
+        self.assertEqual(next(it).as_int(), 1)
+        self.assertEqual(next(it).as_int(), 2)
+        with self.assertRaises(StopIteration):
+            next(it)
 
     def test_delitem(self):
         doc = Document.parse("- a\n- b\n- c\n")
