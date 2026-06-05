@@ -13,6 +13,7 @@ targeted edits that leave the rest of the document untouched.
 
 from ._yaml_edit import (
     Document,
+    Entry,
     Mapping,
     Node,
     Scalar,
@@ -22,6 +23,7 @@ from ._yaml_edit import (
 
 __all__ = [
     "Document",
+    "Entry",
     "Mapping",
     "Node",
     "Scalar",

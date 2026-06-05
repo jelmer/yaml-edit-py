@@ -1,6 +1,6 @@
 import unittest
 
-from yaml_edit import Document, Mapping, Scalar, Sequence, YamlFile
+from yaml_edit import Document, Entry, Mapping, Scalar, Sequence, YamlFile
 
 
 class DocumentTests(unittest.TestCase):
@@ -110,6 +110,69 @@ class MappingTests(unittest.TestCase):
         mapping.clear()
         self.assertTrue(mapping.is_empty())
 
+    def test_iter_yields_keys(self):
+        doc = Document.parse("a: 1\nb: 2\nc: 3\n")
+        mapping = doc.as_mapping()
+        self.assertEqual(list(mapping), ["a", "b", "c"])
+
+    def test_iter_in_comprehension(self):
+        doc = Document.parse("a: 1\nb: 2\n")
+        self.assertEqual({k for k in doc.as_mapping()}, {"a", "b"})
+
+
+class MappingEntryTests(unittest.TestCase):
+    def test_entries_expose_each_pair(self):
+        doc = Document.parse("a: 1\nb: 2\n")
+        entries = doc.as_mapping().entries()
+        self.assertEqual([str(e.key()) for e in entries], ["a", "b"])
+        self.assertEqual([str(e.value()) for e in entries], ["1", "2"])
+
+    def test_find_entry(self):
+        doc = Document.parse("a: 1\nb: 2\n")
+        entry = doc.as_mapping().find_entry("b")
+        self.assertIsInstance(entry, Entry)
+        self.assertEqual(str(entry.value()), "2")
+
+    def test_find_entry_missing(self):
+        doc = Document.parse("a: 1\n")
+        self.assertIsNone(doc.as_mapping().find_entry("z"))
+
+    def test_repeated_keys_found_individually(self):
+        doc = Document.parse("ref: first\nref: second\nref: third\n")
+        mapping = doc.as_mapping()
+        self.assertEqual(mapping.count_key("ref"), 3)
+        entries = mapping.find_all_entries("ref")
+        self.assertEqual(
+            [str(e.value()) for e in entries], ["first", "second", "third"]
+        )
+
+    def test_set_value_on_specific_occurrence(self):
+        doc = Document.parse("ref: first\nref: second\n")
+        entries = doc.as_mapping().find_all_entries("ref")
+        entries[1].set_value("changed")
+        self.assertEqual(str(doc), "ref: first\nref: changed\n")
+
+    def test_remove_nth_occurrence(self):
+        doc = Document.parse("ref: first\nref: second\nref: third\n")
+        mapping = doc.as_mapping()
+        self.assertTrue(mapping.remove_nth("ref", 1))
+        self.assertEqual(str(doc), "ref: first\nref: third\n")
+
+    def test_remove_nth_out_of_range(self):
+        doc = Document.parse("ref: only\n")
+        self.assertFalse(doc.as_mapping().remove_nth("ref", 5))
+
+    def test_entry_remove(self):
+        doc = Document.parse("a: 1\nb: 2\n")
+        mapping = doc.as_mapping()
+        mapping.find_entry("a").remove()
+        self.assertEqual(mapping.keys(), ["b"])
+
+    def test_key_matches_ignores_quoting(self):
+        doc = Document.parse('"a": 1\n')
+        entry = doc.as_mapping().find_entry("a")
+        self.assertTrue(entry.key_matches("a"))
+
 
 class SequenceTests(unittest.TestCase):
     def test_as_sequence_and_indexing(self):
@@ -144,6 +207,22 @@ class SequenceTests(unittest.TestCase):
         doc = Document.parse("- 1\n- 2\n")
         seq = doc.as_sequence()
         self.assertEqual([n.as_int() for n in seq.values()], [1, 2])
+
+    def test_iter(self):
+        doc = Document.parse("- 1\n- 2\n- 3\n")
+        seq = doc.as_sequence()
+        self.assertEqual([n.as_int() for n in seq], [1, 2, 3])
+
+    def test_delitem(self):
+        doc = Document.parse("- a\n- b\n- c\n")
+        seq = doc.as_sequence()
+        del seq[1]
+        self.assertEqual([str(n) for n in seq], ["a", "c"])
+
+    def test_delitem_out_of_range(self):
+        doc = Document.parse("- a\n")
+        with self.assertRaises(IndexError):
+            del doc.as_sequence()[5]
 
 
 class ScalarTests(unittest.TestCase):

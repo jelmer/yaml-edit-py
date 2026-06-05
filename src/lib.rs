@@ -10,7 +10,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyFloat, PyInt, PyString};
 use std::str::FromStr;
 
-use yaml_edit::{Document, Mapping, Scalar, Sequence, YamlFile, YamlNode};
+use yaml_edit::{Document, Mapping, MappingEntry, Scalar, Sequence, YamlFile, YamlNode};
 
 /// A value accepted where YAML expects a scalar, mirroring the `AsYaml`
 /// implementations available in the crate (`str`, integers, floats, `bool`).
@@ -222,6 +222,60 @@ impl PyScalar {
     }
 }
 
+/// A single key/value entry in a mapping.
+///
+/// Entries are the fine-grained handle for working with mappings that contain
+/// repeated keys: each occurrence of a key is a distinct entry, so they can be
+/// inspected and mutated individually rather than collapsing to the first match.
+#[pyclass(name = "Entry", unsendable, module = "yaml_edit._yaml_edit")]
+struct PyEntry {
+    inner: MappingEntry,
+    /// Whether the owning mapping is flow-style, needed when rewriting the value.
+    flow_context: bool,
+}
+
+#[pymethods]
+impl PyEntry {
+    /// The entry's key node, or `None` for a malformed entry with no key.
+    fn key(&self) -> Option<PyNode> {
+        self.inner.key_node().map(|inner| PyNode { inner })
+    }
+
+    /// The entry's value node, or `None` for a malformed entry with no value.
+    fn value(&self) -> Option<PyNode> {
+        self.inner.value_node().map(|inner| PyNode { inner })
+    }
+
+    /// Return `True` if this entry's key matches `key` (ignoring quoting style).
+    fn key_matches(&self, key: &str) -> bool {
+        self.inner.key_matches(key)
+    }
+
+    /// Replace this entry's value in place, preserving the key and formatting.
+    fn set_value(&self, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let arg = ScalarArg::extract(value)?;
+        call_with_scalar!(&arg, |v| self.inner.set_value(v, self.flow_context));
+        Ok(())
+    }
+
+    /// Remove this entry from its mapping.
+    ///
+    /// The entry handle is detached from the tree; calling other methods on it
+    /// afterwards operates on a node that is no longer part of the document.
+    fn remove(&self) {
+        self.inner.clone().remove();
+    }
+
+    fn __repr__(&self) -> String {
+        let key = self
+            .inner
+            .key_node()
+            .map(|k| k.to_string())
+            .unwrap_or_default();
+        format!("<yaml_edit.Entry key={key:?}>")
+    }
+}
+
 /// A YAML mapping (key/value block).
 #[pyclass(name = "Mapping", unsendable, module = "yaml_edit._yaml_edit")]
 struct PyMapping {
@@ -325,12 +379,85 @@ impl PyMapping {
             .collect()
     }
 
+    /// Iterate over the keys, like a Python `dict`.
+    fn __iter__(&self) -> PyKeyIterator {
+        PyKeyIterator {
+            keys: self.keys().into_iter(),
+        }
+    }
+
+    /// All entries, in document order, as fine-grained handles.
+    ///
+    /// Unlike `items`, this exposes every occurrence of a repeated key as its
+    /// own entry, and lets each be mutated in place.
+    fn entries(&self) -> Vec<PyEntry> {
+        let flow_context = self.inner.is_flow_style();
+        self.inner
+            .entries()
+            .map(|inner| PyEntry {
+                inner,
+                flow_context,
+            })
+            .collect()
+    }
+
+    /// The first entry whose key matches `key`, or `None` if absent.
+    fn find_entry(&self, key: &str) -> Option<PyEntry> {
+        let flow_context = self.inner.is_flow_style();
+        self.inner.find_entry_by_key(key).map(|inner| PyEntry {
+            inner,
+            flow_context,
+        })
+    }
+
+    /// Every entry whose key matches `key`, in document order.
+    ///
+    /// YAML permits repeated keys; this returns one handle per occurrence.
+    fn find_all_entries(&self, key: &str) -> Vec<PyEntry> {
+        let flow_context = self.inner.is_flow_style();
+        self.inner
+            .find_all_entries_by_key(key)
+            .map(|inner| PyEntry {
+                inner,
+                flow_context,
+            })
+            .collect()
+    }
+
+    /// The number of entries whose key matches `key`.
+    fn count_key(&self, key: &str) -> usize {
+        self.inner.find_all_entries_by_key(key).count()
+    }
+
+    /// Remove the `n`-th (0-based) occurrence of `key`, returning `True` if it
+    /// existed.
+    fn remove_nth(&self, key: &str, n: usize) -> bool {
+        self.inner.remove_nth_occurrence(key, n).is_some()
+    }
+
     fn __str__(&self) -> String {
         self.inner.to_string()
     }
 
     fn __repr__(&self) -> String {
         format!("<yaml_edit.Mapping len={}>", self.inner.len())
+    }
+}
+
+/// Iterator over a mapping's keys, returned by `Mapping.__iter__`.
+#[pyclass(module = "yaml_edit._yaml_edit")]
+struct PyKeyIterator {
+    keys: std::vec::IntoIter<String>,
+}
+
+#[pymethods]
+impl PyKeyIterator {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&mut self) -> Option<String> {
+        self.keys.next()
     }
 }
 
@@ -403,6 +530,14 @@ impl PySequence {
         }
     }
 
+    fn __delitem__(&self, index: usize) -> PyResult<()> {
+        if self.inner.remove(index).is_some() {
+            Ok(())
+        } else {
+            Err(PyIndexError::new_err("sequence index out of range"))
+        }
+    }
+
     /// Remove and return the element at `index`.
     fn remove(&self, index: usize) -> Option<PyNode> {
         self.inner.remove(index).map(|inner| PyNode { inner })
@@ -422,12 +557,35 @@ impl PySequence {
         self.inner.values().map(|inner| PyNode { inner }).collect()
     }
 
+    fn __iter__(&self) -> PyNodeIterator {
+        PyNodeIterator {
+            nodes: self.values().into_iter(),
+        }
+    }
+
     fn __str__(&self) -> String {
         self.inner.to_string()
     }
 
     fn __repr__(&self) -> String {
         format!("<yaml_edit.Sequence len={}>", self.inner.len())
+    }
+}
+
+/// Iterator over a sequence's element nodes, returned by `Sequence.__iter__`.
+#[pyclass(unsendable, module = "yaml_edit._yaml_edit")]
+struct PyNodeIterator {
+    nodes: std::vec::IntoIter<PyNode>,
+}
+
+#[pymethods]
+impl PyNodeIterator {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&mut self) -> Option<PyNode> {
+        self.nodes.next()
     }
 }
 
@@ -651,5 +809,6 @@ fn _yaml_edit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySequence>()?;
     m.add_class::<PyScalar>()?;
     m.add_class::<PyNode>()?;
+    m.add_class::<PyEntry>()?;
     Ok(())
 }
