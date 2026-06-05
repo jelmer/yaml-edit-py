@@ -1,0 +1,10 @@
+/target
+/build
+/dist
+*.egg-info
+__pycache__/
+*.so
+*.pyd
+.venv/
+.mypy_cache/
+.ruff_cache/

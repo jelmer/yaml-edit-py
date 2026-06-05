@@ -1,0 +1,17 @@
+[package]
+name = "yaml-edit-py"
+version = "0.2.1"
+edition = "2021"
+authors = ["Jelmer Vernooĳ <jelmer@debian.org>"]
+license = "Apache-2.0"
+description = "Python bindings for the yaml-edit lossless YAML parser and editor"
+repository = "https://github.com/jelmer/yaml-edit"
+publish = false
+
+[lib]
+name = "_yaml_edit"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module"] }
+yaml-edit = "0.2.1"
