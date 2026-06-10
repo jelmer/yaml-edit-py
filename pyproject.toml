@@ -31,14 +31,23 @@ where = ["python"]
 target = "yaml_edit._yaml_edit"
 path = "Cargo.toml"
 binding = "PyO3"
+# Build against the CPython stable ABI (matches abi3-py310 in Cargo.toml) so a
+# single wheel per platform works on Python 3.10+.
+py-limited-api = "auto"
 
 [tool.setuptools.package-data]
 yaml_edit = ["py.typed", "*.pyi"]
 
+[tool.distutils.bdist_wheel]
+py-limited-api = "cp310"
+
 [tool.cibuildwheel]
+# The extension is built against the stable ABI (abi3-py310), so a single
+# CPython 3.10 build produces one wheel that works on 3.10+.
 # PyPy ships no Rust toolchain by default and the extension targets CPython.
 # musllinux is skipped: no prebuilt Rust for the musl i686 target.
-skip = "pp* *-musllinux*"
+build = "cp310-*"
+skip = "*-musllinux*"
 build-frontend = "build"
 test-command = "python -m unittest discover -s {project}/tests"
 
