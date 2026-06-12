@@ -75,6 +75,27 @@ for document in stream.documents():
 # ['b']
 ```
 
+Resolving anchors and merge keys (`<<`) for reading:
+
+```python
+doc = Document.parse(
+    "defaults: &d\n"
+    "  timeout: 30\n"
+    "  retries: 3\n"
+    "prod:\n"
+    "  <<: *d\n"
+    "  host: prod.example.com\n"
+    "  timeout: 60\n"
+)
+prod = doc.merged().get_merged("prod")
+print(prod.keys())
+# ['host', 'timeout', 'retries']
+print(str(prod["timeout"]))  # the direct entry wins over the merged one
+# 60
+```
+
+The merged view is read-only; edit through the original `Document` or `Mapping`.
+
 ## Supported value types
 
 Scalar values passed to `set`, `push`, and `insert` may be `str`, `int`,

@@ -10,6 +10,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyFloat, PyInt, PyString};
 use std::str::FromStr;
 
+use yaml_edit::anchor_resolution::{AnchorRegistry, DocumentMergedExt, MergedMapping};
 use yaml_edit::{Document, Mapping, MappingEntry, Scalar, Sequence, YamlFile, YamlNode};
 
 /// A value accepted where YAML expects a scalar, mirroring the `AsYaml`
@@ -461,6 +462,101 @@ impl PyKeyIterator {
     }
 }
 
+/// A read-only view of a mapping with aliases and merge keys (`<<`) resolved.
+///
+/// Obtained from `Document.merged()`. Direct entries take precedence over keys
+/// contributed by merge sources, the synthetic `<<` key is hidden, and aliases
+/// (`*name`) are expanded to their anchored values.
+///
+/// The view does not mutate the document; mutate through the original
+/// `Mapping`/`Document` instead.
+///
+/// Unlike the other collection types, this has no `__str__`: a merged view is
+/// synthetic and has no single source span, so serializing it would have to
+/// emit the un-merged source and hide the merged-in keys. Read the resolved
+/// values through `items`/`get` instead.
+#[pyclass(name = "MergedMapping", unsendable, module = "yaml_edit._yaml_edit")]
+struct PyMergedMapping {
+    base: Mapping,
+    registry: AnchorRegistry,
+}
+
+impl PyMergedMapping {
+    /// Borrow `base` and `registry` as a `MergedMapping` for a single query.
+    fn view(&self) -> MergedMapping<'_> {
+        MergedMapping::new(self.base.clone(), &self.registry)
+    }
+}
+
+#[pymethods]
+impl PyMergedMapping {
+    fn __len__(&self) -> usize {
+        self.view().len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.view().is_empty()
+    }
+
+    fn contains_key(&self, key: &str) -> bool {
+        self.view().contains_key(key)
+    }
+
+    fn __contains__(&self, key: &str) -> bool {
+        self.view().contains_key(key)
+    }
+
+    /// Look up a key, resolving aliases and merge keys, or `None` if absent.
+    fn get(&self, key: &str) -> Option<PyNode> {
+        self.view().get(key).map(|inner| PyNode { inner })
+    }
+
+    fn __getitem__(&self, key: &str) -> PyResult<PyNode> {
+        self.view()
+            .get(key)
+            .map(|inner| PyNode { inner })
+            .ok_or_else(|| PyKeyError::new_err(key.to_string()))
+    }
+
+    /// Look up a nested mapping, returning another merged view that resolves
+    /// against the same anchors.
+    fn get_merged(&self, key: &str) -> Option<PyMergedMapping> {
+        self.view().get_merged(key).map(|nested| PyMergedMapping {
+            base: nested.base().clone(),
+            registry: self.registry.clone(),
+        })
+    }
+
+    /// The merged keys, in resolution order (direct entries first).
+    fn keys(&self) -> Vec<String> {
+        self.view().keys().map(|k| k.to_string()).collect()
+    }
+
+    /// The merged value nodes, in resolution order.
+    fn values(&self) -> Vec<PyNode> {
+        self.view().values().map(|inner| PyNode { inner }).collect()
+    }
+
+    /// (key, value) pairs in the merged view, in resolution order.
+    fn items(&self) -> Vec<(String, PyNode)> {
+        self.view()
+            .iter()
+            .map(|(k, v)| (k.to_string(), PyNode { inner: v }))
+            .collect()
+    }
+
+    /// Iterate over the merged keys, like a Python `dict`.
+    fn __iter__(&self) -> PyKeyIterator {
+        PyKeyIterator {
+            keys: self.keys().into_iter(),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<yaml_edit.MergedMapping len={}>", self.view().len())
+    }
+}
+
 /// A YAML sequence (list).
 #[pyclass(name = "Sequence", unsendable, module = "yaml_edit._yaml_edit")]
 struct PySequence {
@@ -645,6 +741,18 @@ impl PyDocument {
         self.inner.as_scalar().map(|inner| PyScalar { inner })
     }
 
+    /// A merged view of the root mapping, resolving aliases and merge keys
+    /// (`<<`), or `None` if the root is not a mapping.
+    ///
+    /// The anchor registry is built from the whole document, so aliases
+    /// pointing at anchors defined elsewhere resolve correctly.
+    fn merged(&self) -> Option<PyMergedMapping> {
+        self.inner.merged().map(|view| PyMergedMapping {
+            base: view.as_mapping().base().clone(),
+            registry: view.registry().clone(),
+        })
+    }
+
     fn contains_key(&self, key: &str) -> bool {
         self.inner.contains_key(key)
     }
@@ -806,6 +914,7 @@ fn _yaml_edit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDocument>()?;
     m.add_class::<PyYamlFile>()?;
     m.add_class::<PyMapping>()?;
+    m.add_class::<PyMergedMapping>()?;
     m.add_class::<PySequence>()?;
     m.add_class::<PyScalar>()?;
     m.add_class::<PyNode>()?;
