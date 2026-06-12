@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "yaml-edit"
-version = "0.1.1"
+version = "0.1.2"
 description = "Lossless YAML parser and editor that preserves formatting, comments, and whitespace"
 readme = "README.md"
 requires-python = ">=3.10"
