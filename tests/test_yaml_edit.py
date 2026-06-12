@@ -1,6 +1,14 @@
 import unittest
 
-from yaml_edit import Document, Entry, Mapping, Scalar, Sequence, YamlFile
+from yaml_edit import (
+    Document,
+    Entry,
+    Mapping,
+    MergedMapping,
+    Scalar,
+    Sequence,
+    YamlFile,
+)
 
 
 class DocumentTests(unittest.TestCase):
@@ -277,6 +285,82 @@ class NodeTests(unittest.TestCase):
         self.assertTrue(node.is_scalar())
         self.assertIsNotNone(node.as_scalar())
         self.assertIsNone(node.as_mapping())
+
+
+class MergedMappingTests(unittest.TestCase):
+    MERGE_YAML = (
+        "defaults: &d\n"
+        "  timeout: 30\n"
+        "  retries: 3\n"
+        "prod:\n"
+        "  <<: *d\n"
+        "  host: prod.example.com\n"
+        "  timeout: 60\n"
+    )
+
+    def test_non_mapping_root_returns_none(self):
+        self.assertIsNone(Document.parse("- 1\n- 2\n").merged())
+
+    def test_merged_root_keys(self):
+        merged = Document.parse(self.MERGE_YAML).merged()
+        self.assertIsInstance(merged, MergedMapping)
+        self.assertEqual(merged.keys(), ["defaults", "prod"])
+
+    def test_merge_key_brings_in_entries(self):
+        prod = Document.parse(self.MERGE_YAML).merged().get_merged("prod")
+        self.assertEqual(prod.keys(), ["host", "timeout", "retries"])
+        self.assertEqual(len(prod), 3)
+        self.assertFalse(prod.is_empty())
+
+    def test_direct_entry_overrides_merged(self):
+        prod = Document.parse(self.MERGE_YAML).merged().get_merged("prod")
+        self.assertEqual(str(prod["timeout"]), "60")
+
+    def test_merged_in_entry_is_visible(self):
+        prod = Document.parse(self.MERGE_YAML).merged().get_merged("prod")
+        self.assertEqual(str(prod.get("retries")), "3")
+
+    def test_merge_key_itself_is_hidden(self):
+        prod = Document.parse(self.MERGE_YAML).merged().get_merged("prod")
+        self.assertIsNone(prod.get("<<"))
+        self.assertNotIn("<<", prod)
+
+    def test_contains_and_missing(self):
+        prod = Document.parse(self.MERGE_YAML).merged().get_merged("prod")
+        self.assertIn("host", prod)
+        self.assertTrue(prod.contains_key("host"))
+        self.assertNotIn("absent", prod)
+        self.assertFalse(prod.contains_key("absent"))
+        self.assertIsNone(prod.get("absent"))
+
+    def test_getitem_missing_raises_keyerror(self):
+        prod = Document.parse(self.MERGE_YAML).merged().get_merged("prod")
+        with self.assertRaises(KeyError):
+            prod["absent"]
+
+    def test_items_and_iter(self):
+        prod = Document.parse(self.MERGE_YAML).merged().get_merged("prod")
+        self.assertEqual(
+            [(k, str(v)) for k, v in prod.items()],
+            [("host", "prod.example.com"), ("timeout", "60"), ("retries", "3")],
+        )
+        self.assertEqual(list(prod), ["host", "timeout", "retries"])
+
+    def test_values(self):
+        prod = Document.parse(self.MERGE_YAML).merged().get_merged("prod")
+        self.assertEqual(
+            [str(v) for v in prod.values()],
+            ["prod.example.com", "60", "3"],
+        )
+
+    def test_alias_value_resolves(self):
+        doc = Document.parse("config: &cfg\n  port: 8080\nserver: *cfg\n")
+        server = doc.merged().get_merged("server")
+        self.assertEqual(str(server["port"]), "8080")
+
+    def test_get_merged_missing_returns_none(self):
+        merged = Document.parse(self.MERGE_YAML).merged()
+        self.assertIsNone(merged.get_merged("absent"))
 
 
 class YamlFileTests(unittest.TestCase):

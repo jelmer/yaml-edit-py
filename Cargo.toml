@@ -14,4 +14,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.23", features = ["extension-module"] }
-yaml-edit = "0.2.1"
+yaml-edit = "0.2.2"
