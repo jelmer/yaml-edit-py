@@ -63,6 +63,26 @@ print(doc, end="")
 #   - cache
 ```
 
+Mappings and sequences also support the usual `dict` and `list` operations, so
+you can use subscripting instead of `get`/`set`:
+
+```python
+doc = Document.parse("name: demo\nversion: 1.0.0\n")
+mapping = doc.as_mapping()
+mapping["name"] = "renamed"       # same as mapping.set("name", "renamed")
+print(str(mapping["version"]))    # same as mapping.get("version")
+# 1.0.0
+print("name" in mapping)
+# True
+del mapping["version"]
+for key in mapping:
+    print(key)
+# name
+```
+
+`Document` itself supports the same subscripting for top-level keys, and
+`Sequence` supports indexing, assignment, and `del` by position.
+
 Multi-document streams:
 
 ```python
