@@ -33,13 +33,7 @@ print(doc, end="")
 Edits preserve surrounding formatting and comments:
 
 ```python
-doc = Document.parse(
-    "# project config\n"
-    "name: demo   # the name\n"
-    "tags:\n"
-    "  - a\n"
-    "  - b\n"
-)
+doc = Document.parse("# project config\nname: demo   # the name\ntags:\n  - a\n  - b\n")
 mapping = doc.as_mapping()
 mapping.set("name", "renamed")
 print(doc, end="")
@@ -69,8 +63,8 @@ you can use subscripting instead of `get`/`set`:
 ```python
 doc = Document.parse("name: demo\nversion: 1.0.0\n")
 mapping = doc.as_mapping()
-mapping["name"] = "renamed"       # same as mapping.set("name", "renamed")
-print(str(mapping["version"]))    # same as mapping.get("version")
+mapping["name"] = "renamed"  # same as mapping.set("name", "renamed")
+print(str(mapping["version"]))  # same as mapping.get("version")
 # 1.0.0
 print("name" in mapping)
 # True
