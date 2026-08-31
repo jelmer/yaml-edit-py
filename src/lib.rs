@@ -11,28 +11,29 @@ use pyo3::types::{PyBool, PyFloat, PyInt, PyString};
 use std::str::FromStr;
 
 use yaml_edit::anchor_resolution::{AnchorRegistry, DocumentMergedExt, MergedMapping};
-use yaml_edit::{Document, Mapping, MappingEntry, Scalar, Sequence, YamlFile, YamlNode};
+use yaml_edit::{
+    Document, Mapping, MappingEntry, Scalar, ScalarValue, Sequence, YamlFile, YamlNode,
+};
 
 /// A value accepted where YAML expects a scalar, mirroring the `AsYaml`
-/// implementations available in the crate (`str`, integers, floats, `bool`).
+/// implementations available in the crate (`str`, integers, floats, `bool`),
+/// plus `None`, which maps to a YAML null.
 enum ScalarArg {
     Str(String),
     Int(i64),
     Float(f64),
     Bool(bool),
+    Null,
 }
 
 impl ScalarArg {
     /// Extract a scalar argument from a Python object.
     ///
     /// `bool` is checked before `int` because Python's `bool` is a subclass of
-    /// `int`. `None` is rejected: the high-level crate API has no way to write a
-    /// YAML null, so we surface that rather than writing a quoted "null" string.
+    /// `int`. `None` maps to a YAML null scalar.
     fn extract(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
         if obj.is_none() {
-            return Err(PyTypeError::new_err(
-                "None is not supported as a YAML value; the editor cannot write null scalars",
-            ));
+            return Ok(ScalarArg::Null);
         }
         if obj.is_instance_of::<PyBool>() {
             return Ok(ScalarArg::Bool(obj.extract()?));
@@ -47,7 +48,7 @@ impl ScalarArg {
             return Ok(ScalarArg::Str(obj.extract()?));
         }
         Err(PyTypeError::new_err(format!(
-            "expected str, int, float or bool, got {}",
+            "expected str, int, float, bool or None, got {}",
             obj.get_type().name()?,
         )))
     }
@@ -76,6 +77,76 @@ macro_rules! call_with_scalar {
             }
             ScalarArg::Bool(b) => {
                 let $v = b;
+                $body
+            }
+            ScalarArg::Null => {
+                let $v = ScalarValue::null();
+                $body
+            }
+        }
+    };
+}
+
+/// A value accepted where YAML expects a node: either a scalar (`str`, `int`,
+/// `float`, `bool`) or an existing node wrapper (`Node`, `Mapping`, `Sequence`,
+/// `Scalar`).
+///
+/// Passing a node copies its source text into the destination, so node values
+/// from one document can be grafted into another.
+enum ValueArg {
+    Scalar(ScalarArg),
+    Node(YamlNode),
+    Mapping(Mapping),
+    Sequence(Sequence),
+    ScalarNode(Scalar),
+}
+
+impl ValueArg {
+    /// Extract a value argument from a Python object, accepting scalars and the
+    /// node wrapper types.
+    fn extract(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
+        if let Ok(node) = obj.cast::<PyNode>() {
+            return Ok(ValueArg::Node(node.borrow().inner.clone()));
+        }
+        if let Ok(mapping) = obj.cast::<PyMapping>() {
+            return Ok(ValueArg::Mapping(mapping.borrow().inner.clone()));
+        }
+        if let Ok(sequence) = obj.cast::<PySequence>() {
+            return Ok(ValueArg::Sequence(sequence.borrow().inner.clone()));
+        }
+        if let Ok(scalar) = obj.cast::<PyScalar>() {
+            return Ok(ValueArg::ScalarNode(scalar.borrow().inner.clone()));
+        }
+        ScalarArg::extract(obj).map(ValueArg::Scalar).map_err(|_| {
+            // Widen the scalar-only message to mention the accepted node types.
+            PyTypeError::new_err(format!(
+                "expected str, int, float, bool, None, or a Node/Mapping/Sequence/Scalar, got {}",
+                obj.get_type().name().map(|n| n.to_string()).unwrap_or_default(),
+            ))
+        })
+    }
+}
+
+/// Apply an `AsYaml`-consuming method with the value argument as the matching
+/// concrete type, covering both scalars and the node wrapper types.
+macro_rules! call_with_value {
+    ($arg:expr, |$v:ident| $body:expr) => {
+        match $arg {
+            ValueArg::Scalar(scalar) => call_with_scalar!(scalar, |$v| $body),
+            ValueArg::Node(node) => {
+                let $v = node;
+                $body
+            }
+            ValueArg::Mapping(mapping) => {
+                let $v = mapping;
+                $body
+            }
+            ValueArg::Sequence(sequence) => {
+                let $v = sequence;
+                $body
+            }
+            ValueArg::ScalarNode(scalar) => {
+                let $v = scalar;
                 $body
             }
         }
@@ -157,6 +228,145 @@ impl PyNode {
         self.inner.to_bool()
     }
 
+    /// The number of entries (mapping) or elements (sequence).
+    ///
+    /// Raises `TypeError` if the node is a scalar or other non-collection.
+    fn __len__(&self) -> PyResult<usize> {
+        if let Some(m) = self.inner.as_mapping() {
+            Ok(m.len())
+        } else if let Some(s) = self.inner.as_sequence() {
+            Ok(s.len())
+        } else {
+            Err(PyTypeError::new_err(format!(
+                "object of type '{}' node has no len()",
+                self.kind()
+            )))
+        }
+    }
+
+    /// Look up by key (mapping) or index (sequence).
+    ///
+    /// Raises `KeyError`/`IndexError` if the entry is absent, and `TypeError`
+    /// if the node is not a mapping or sequence.
+    fn __getitem__(&self, key: &Bound<'_, PyAny>) -> PyResult<PyNode> {
+        if let Some(m) = self.inner.as_mapping() {
+            let key: String = key.extract()?;
+            m.get(&key)
+                .map(|inner| PyNode { inner })
+                .ok_or_else(|| PyKeyError::new_err(key))
+        } else if let Some(s) = self.inner.as_sequence() {
+            let index: usize = key.extract()?;
+            s.get(index)
+                .map(|inner| PyNode { inner })
+                .ok_or_else(|| PyIndexError::new_err("sequence index out of range"))
+        } else {
+            Err(PyTypeError::new_err(format!(
+                "'{}' node is not subscriptable",
+                self.kind()
+            )))
+        }
+    }
+
+    /// Assign by key (mapping) or index (sequence).
+    ///
+    /// Raises `IndexError` for an out-of-range sequence index, and `TypeError`
+    /// if the node is not a mapping or sequence.
+    fn __setitem__(&self, key: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let arg = ValueArg::extract(value)?;
+        if let Some(m) = self.inner.as_mapping() {
+            let key: String = key.extract()?;
+            call_with_value!(arg, |v| m.set(&key, v));
+            Ok(())
+        } else if let Some(s) = self.inner.as_sequence() {
+            let index: usize = key.extract()?;
+            if call_with_value!(arg, |v| s.set(index, v)) {
+                Ok(())
+            } else {
+                Err(PyIndexError::new_err("sequence index out of range"))
+            }
+        } else {
+            Err(PyTypeError::new_err(format!(
+                "'{}' node does not support item assignment",
+                self.kind()
+            )))
+        }
+    }
+
+    /// Delete by key (mapping) or index (sequence).
+    ///
+    /// Raises `KeyError`/`IndexError` if the entry is absent, and `TypeError`
+    /// if the node is not a mapping or sequence.
+    fn __delitem__(&self, key: &Bound<'_, PyAny>) -> PyResult<()> {
+        if let Some(m) = self.inner.as_mapping() {
+            let key: String = key.extract()?;
+            if m.remove(&key).is_some() {
+                Ok(())
+            } else {
+                Err(PyKeyError::new_err(key))
+            }
+        } else if let Some(s) = self.inner.as_sequence() {
+            let index: usize = key.extract()?;
+            if s.remove(index).is_some() {
+                Ok(())
+            } else {
+                Err(PyIndexError::new_err("sequence index out of range"))
+            }
+        } else {
+            Err(PyTypeError::new_err(format!(
+                "'{}' node does not support item deletion",
+                self.kind()
+            )))
+        }
+    }
+
+    /// Iterate over keys (mapping) or element nodes (sequence).
+    ///
+    /// Raises `TypeError` if the node is not a mapping or sequence.
+    fn __iter__(&self) -> PyResult<PyNodeChildIterator> {
+        if let Some(m) = self.inner.as_mapping() {
+            Ok(PyNodeChildIterator {
+                keys: Some(m.keys().map(|k| k.to_string()).collect::<Vec<_>>().into_iter()),
+                nodes: None,
+            })
+        } else if let Some(s) = self.inner.as_sequence() {
+            Ok(PyNodeChildIterator {
+                keys: None,
+                nodes: Some(
+                    s.values()
+                        .map(|inner| PyNode { inner })
+                        .collect::<Vec<_>>()
+                        .into_iter(),
+                ),
+            })
+        } else {
+            Err(PyTypeError::new_err(format!(
+                "'{}' node is not iterable",
+                self.kind()
+            )))
+        }
+    }
+
+    /// Membership test: key (mapping) or scalar element (sequence).
+    ///
+    /// For a sequence, an element matches when its unquoted scalar value equals
+    /// the candidate's string form. Raises `TypeError` for a scalar or other
+    /// non-collection.
+    fn __contains__(&self, item: &Bound<'_, PyAny>) -> PyResult<bool> {
+        if let Some(m) = self.inner.as_mapping() {
+            let key: String = item.extract()?;
+            Ok(m.contains_key(&key))
+        } else if let Some(s) = self.inner.as_sequence() {
+            let needle = item.str()?.to_string();
+            Ok(s.values()
+                .any(|v| v.as_scalar().map(|sc| sc.as_string()) == Some(needle.clone())))
+        } else {
+            Err(PyTypeError::new_err(format!(
+                "argument of type '{}' node is not a container",
+                self.kind()
+            )))
+        }
+    }
+
     /// The node's source text, including any surrounding formatting.
     fn __str__(&self) -> String {
         self.inner.to_string()
@@ -164,6 +374,39 @@ impl PyNode {
 
     fn __repr__(&self) -> String {
         format!("<yaml_edit.Node kind={} {:?}>", self.kind(), self.__str__())
+    }
+}
+
+/// Iterator over a node's children: mapping keys or sequence element nodes.
+///
+/// Returned by `Node.__iter__`, which dispatches on the node's kind. Exactly
+/// one of the two backing iterators is populated.
+#[pyclass(unsendable, module = "yaml_edit._yaml_edit")]
+struct PyNodeChildIterator {
+    keys: Option<std::vec::IntoIter<String>>,
+    nodes: Option<std::vec::IntoIter<PyNode>>,
+}
+
+#[pymethods]
+impl PyNodeChildIterator {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        if let Some(keys) = &mut self.keys {
+            return keys
+                .next()
+                .map(|k| Ok(k.into_pyobject(py)?.into_any().unbind()))
+                .transpose();
+        }
+        if let Some(nodes) = &mut self.nodes {
+            return nodes
+                .next()
+                .map(|n| Ok(Py::new(py, n)?.into_any()))
+                .transpose();
+        }
+        Ok(None)
     }
 }
 
@@ -254,8 +497,8 @@ impl PyEntry {
 
     /// Replace this entry's value in place, preserving the key and formatting.
     fn set_value(&self, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        let arg = ScalarArg::extract(value)?;
-        call_with_scalar!(&arg, |v| self.inner.set_value(v, self.flow_context));
+        let arg = ValueArg::extract(value)?;
+        call_with_value!(arg, |v| self.inner.set_value(v, self.flow_context));
         Ok(())
     }
 
@@ -331,8 +574,8 @@ impl PyMapping {
 
     /// Set `key` to `value`, inserting a new entry or updating an existing one.
     fn set(&self, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        let arg = ScalarArg::extract(value)?;
-        call_with_scalar!(&arg, |v| self.inner.set(key, v));
+        let arg = ValueArg::extract(value)?;
+        call_with_value!(arg, |v| self.inner.set(key, v));
         Ok(())
     }
 
@@ -599,27 +842,27 @@ impl PySequence {
 
     /// Append `value` to the end of the sequence.
     fn push(&self, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        let arg = ScalarArg::extract(value)?;
-        call_with_scalar!(&arg, |v| self.inner.push(v));
+        let arg = ValueArg::extract(value)?;
+        call_with_value!(arg, |v| self.inner.push(v));
         Ok(())
     }
 
     /// Insert `value` before `index`.
     fn insert(&self, index: usize, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        let arg = ScalarArg::extract(value)?;
-        call_with_scalar!(&arg, |v| self.inner.insert(index, v));
+        let arg = ValueArg::extract(value)?;
+        call_with_value!(arg, |v| self.inner.insert(index, v));
         Ok(())
     }
 
     /// Replace the element at `index`, returning `True` on success.
     fn set(&self, index: usize, value: &Bound<'_, PyAny>) -> PyResult<bool> {
-        let arg = ScalarArg::extract(value)?;
-        Ok(call_with_scalar!(&arg, |v| self.inner.set(index, v)))
+        let arg = ValueArg::extract(value)?;
+        Ok(call_with_value!(arg, |v| self.inner.set(index, v)))
     }
 
     fn __setitem__(&self, index: usize, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        let arg = ScalarArg::extract(value)?;
-        if call_with_scalar!(&arg, |v| self.inner.set(index, v)) {
+        let arg = ValueArg::extract(value)?;
+        if call_with_value!(arg, |v| self.inner.set(index, v)) {
             Ok(())
         } else {
             Err(PyIndexError::new_err("sequence index out of range"))
@@ -780,8 +1023,8 @@ impl PyDocument {
 
     /// Set a top-level key, treating the document root as a mapping.
     fn set(&self, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        let arg = ScalarArg::extract(value)?;
-        call_with_scalar!(&arg, |v| self.inner.set(key, v));
+        let arg = ValueArg::extract(value)?;
+        call_with_value!(arg, |v| self.inner.set(key, v));
         Ok(())
     }
 
@@ -918,6 +1161,7 @@ fn _yaml_edit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySequence>()?;
     m.add_class::<PyScalar>()?;
     m.add_class::<PyNode>()?;
+    m.add_class::<PyNodeChildIterator>()?;
     m.add_class::<PyEntry>()?;
     Ok(())
 }

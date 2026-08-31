@@ -77,10 +77,19 @@ class DocumentTests(unittest.TestCase):
         doc.set("flag", True)
         self.assertEqual(str(doc["flag"]), "true")
 
-    def test_none_rejected(self):
-        doc = Document()
-        with self.assertRaises(TypeError):
-            doc.set("x", None)
+    def test_none_sets_null(self):
+        doc = Document.parse("a: 1\n")
+        doc.set("a", None)
+        doc.set("b", None)
+        self.assertEqual(str(doc), "a: null\nb: null\n")
+        self.assertTrue(doc.get("a").as_scalar().is_null())
+        self.assertTrue(doc.get("b").as_scalar().is_null())
+
+    def test_string_null_not_treated_as_null(self):
+        doc = Document.parse("a: 1\n")
+        doc.set("s", "null")
+        self.assertEqual(str(doc), "a: 1\ns: 'null'\n")
+        self.assertFalse(doc.get("s").as_scalar().is_null())
 
     def test_unsupported_type_rejected(self):
         doc = Document()
@@ -285,6 +294,95 @@ class NodeTests(unittest.TestCase):
         self.assertTrue(node.is_scalar())
         self.assertIsNotNone(node.as_scalar())
         self.assertIsNone(node.as_mapping())
+
+    def test_mapping_node_subscript(self):
+        doc = Document.parse("m:\n  a: 1\n  b: 2\n")
+        node = doc["m"]
+        self.assertEqual(len(node), 2)
+        self.assertEqual(str(node["a"]), "1")
+        node["a"] = 99
+        self.assertEqual(str(node["a"]), "99")
+        self.assertIn("a", node)
+        self.assertNotIn("z", node)
+        del node["b"]
+        self.assertEqual(list(node), ["a"])
+
+    def test_mapping_node_getitem_missing_raises_keyerror(self):
+        node = Document.parse("m:\n  a: 1\n")["m"]
+        with self.assertRaises(KeyError):
+            node["missing"]
+        with self.assertRaises(KeyError):
+            del node["missing"]
+
+    def test_sequence_node_subscript(self):
+        doc = Document.parse("s:\n  - foo\n  - bar\n")
+        node = doc["s"]
+        self.assertEqual(len(node), 2)
+        self.assertEqual(str(node[0]), "foo")
+        node[0] = "baz"
+        self.assertEqual(str(node[0]), "baz")
+        self.assertEqual([str(n) for n in node], ["baz", "bar"])
+        self.assertIn("baz", node)
+        self.assertNotIn("foo", node)
+        del node[0]
+        self.assertEqual([str(n) for n in node], ["bar"])
+
+    def test_sequence_node_index_out_of_range(self):
+        node = Document.parse("s:\n  - foo\n")["s"]
+        with self.assertRaises(IndexError):
+            node[5]
+        with self.assertRaises(IndexError):
+            node[5] = "x"
+        with self.assertRaises(IndexError):
+            del node[5]
+
+    def test_scalar_node_not_a_container(self):
+        node = Document.parse("x: scalar\n")["x"]
+        with self.assertRaises(TypeError):
+            len(node)
+        with self.assertRaises(TypeError):
+            node[0]
+        with self.assertRaises(TypeError):
+            node[0] = "x"
+        with self.assertRaises(TypeError):
+            del node[0]
+        with self.assertRaises(TypeError):
+            iter(node)
+        with self.assertRaises(TypeError):
+            "x" in node
+
+
+class NodeValueTests(unittest.TestCase):
+    """Setters accept node wrappers as values, not just scalars."""
+
+    def test_mapping_set_scalar_node(self):
+        src = Document.parse("v: hello\n")
+        dst = Document.parse("name: demo\n")
+        dst.set("greeting", src["v"].as_scalar())
+        self.assertEqual(str(dst), "name: demo\ngreeting: hello\n")
+
+    def test_mapping_set_flow_node_value(self):
+        src = Document.parse("items: [a, b]\n")
+        dst = Document.parse("name: demo\n")
+        dst["payload"] = src["items"]
+        self.assertEqual(str(dst), "name: demo\npayload: [a, b]\n")
+
+    def test_sequence_push_scalar_node(self):
+        src = Document.parse("v: world\n")
+        seq = Document.parse("list:\n  - 1\n")["list"].as_sequence()
+        seq.push(src["v"])
+        self.assertEqual([str(n) for n in seq], ["1", "world"])
+
+    def test_node_setitem_accepts_node_value(self):
+        src = Document.parse("v: grafted\n")
+        node = Document.parse("m:\n  a: 1\n")["m"]
+        node["a"] = src["v"]
+        self.assertEqual(str(node["a"]), "grafted")
+
+    def test_set_rejects_unsupported_value(self):
+        dst = Document.parse("name: demo\n")
+        with self.assertRaises(TypeError):
+            dst.set("bad", [1, 2, 3])
 
 
 class MergedMappingTests(unittest.TestCase):
