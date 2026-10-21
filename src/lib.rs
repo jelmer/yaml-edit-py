@@ -11,71 +11,100 @@ use pyo3::types::{PyBool, PyFloat, PyInt, PyString};
 use std::str::FromStr;
 
 use yaml_edit::anchor_resolution::{AnchorRegistry, DocumentMergedExt, MergedMapping};
-use yaml_edit::{Document, Mapping, MappingEntry, Scalar, Sequence, YamlFile, YamlNode};
+use yaml_edit::{
+    Alias, Document, Mapping, MappingEntry, Scalar, Sequence, TaggedNode, YamlFile, YamlNode,
+};
 
-/// A value accepted where YAML expects a scalar, mirroring the `AsYaml`
-/// implementations available in the crate (`str`, integers, floats, `bool`).
-enum ScalarArg {
+/// A value accepted where YAML expects a value, mirroring the `AsYaml`
+/// implementations available in the crate.
+enum ValueArg {
+    Null,
     Str(String),
     Int(i64),
     Float(f64),
     Bool(bool),
+    Node(YamlNode),
 }
 
-impl ScalarArg {
-    /// Extract a scalar argument from a Python object.
+impl ValueArg {
+    /// Extract a value argument from a Python object.
     ///
     /// `bool` is checked before `int` because Python's `bool` is a subclass of
-    /// `int`. `None` is rejected: the high-level crate API has no way to write a
-    /// YAML null, so we surface that rather than writing a quoted "null" string.
+    /// `int`. `None` becomes a YAML null, and the node wrappers (`Mapping`,
+    /// `Sequence`, `Scalar`, `Node`, `Alias`, `TaggedNode`) are inserted as a
+    /// copy of the node.
     fn extract(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
         if obj.is_none() {
-            return Err(PyTypeError::new_err(
-                "None is not supported as a YAML value; the editor cannot write null scalars",
-            ));
+            return Ok(ValueArg::Null);
         }
         if obj.is_instance_of::<PyBool>() {
-            return Ok(ScalarArg::Bool(obj.extract()?));
+            return Ok(ValueArg::Bool(obj.extract()?));
         }
         if obj.is_instance_of::<PyInt>() {
-            return Ok(ScalarArg::Int(obj.extract()?));
+            return Ok(ValueArg::Int(obj.extract()?));
         }
         if obj.is_instance_of::<PyFloat>() {
-            return Ok(ScalarArg::Float(obj.extract()?));
+            return Ok(ValueArg::Float(obj.extract()?));
         }
         if obj.is_instance_of::<PyString>() {
-            return Ok(ScalarArg::Str(obj.extract()?));
+            return Ok(ValueArg::Str(obj.extract()?));
+        }
+        if let Ok(node) = obj.extract::<PyRef<'_, PyNode>>() {
+            return Ok(ValueArg::Node(node.inner.clone()));
+        }
+        if let Ok(mapping) = obj.extract::<PyRef<'_, PyMapping>>() {
+            return Ok(ValueArg::Node(YamlNode::Mapping(mapping.inner.clone())));
+        }
+        if let Ok(sequence) = obj.extract::<PyRef<'_, PySequence>>() {
+            return Ok(ValueArg::Node(YamlNode::Sequence(sequence.inner.clone())));
+        }
+        if let Ok(scalar) = obj.extract::<PyRef<'_, PyScalar>>() {
+            return Ok(ValueArg::Node(YamlNode::Scalar(scalar.inner.clone())));
+        }
+        if let Ok(alias) = obj.extract::<PyRef<'_, PyAlias>>() {
+            return Ok(ValueArg::Node(YamlNode::Alias(alias.inner.clone())));
+        }
+        if let Ok(tagged) = obj.extract::<PyRef<'_, PyTaggedNode>>() {
+            return Ok(ValueArg::Node(YamlNode::TaggedNode(tagged.inner.clone())));
         }
         Err(PyTypeError::new_err(format!(
-            "expected str, int, float or bool, got {}",
+            "expected str, int, float, bool, None or a YAML node, got {}",
             obj.get_type().name()?,
         )))
     }
 }
 
-/// Apply an `AsYaml`-consuming method with the scalar argument as the matching
+/// Apply an `AsYaml`-consuming method with the value argument as the matching
 /// concrete type.
 ///
 /// `yaml-edit`'s value methods are generic over `impl AsYaml`, and trait objects
 /// (`&dyn AsYaml`) do not themselves implement `AsYaml`, so the call must be
 /// monomorphized per arm rather than dispatched dynamically.
-macro_rules! call_with_scalar {
+macro_rules! call_with_value {
     ($arg:expr, |$v:ident| $body:expr) => {
         match $arg {
-            ScalarArg::Str(s) => {
+            ValueArg::Null => {
+                let $v = None::<&str>;
+                $body
+            }
+            ValueArg::Str(s) => {
                 let $v = s.as_str();
                 $body
             }
-            ScalarArg::Int(i) => {
+            ValueArg::Int(i) => {
                 let $v = i;
                 $body
             }
-            ScalarArg::Float(x) => {
+            ValueArg::Float(x) => {
                 let $v = x;
                 $body
             }
-            ScalarArg::Bool(b) => {
+            ValueArg::Bool(b) => {
                 let $v = b;
+                $body
+            }
+            ValueArg::Node(n) => {
+                let $v = n;
                 $body
             }
         }
@@ -121,6 +150,34 @@ impl PyNode {
         self.inner.is_sequence()
     }
 
+    fn is_alias(&self) -> bool {
+        self.inner.is_alias()
+    }
+
+    fn is_tagged(&self) -> bool {
+        self.inner.is_tagged()
+    }
+
+    /// View this node as an `Alias`, or `None` if it is not an alias.
+    fn as_alias(&self) -> Option<PyAlias> {
+        match &self.inner {
+            YamlNode::Alias(inner) => Some(PyAlias {
+                inner: inner.clone(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// View this node as a `TaggedNode`, or `None` if it is not tagged.
+    fn as_tagged(&self) -> Option<PyTaggedNode> {
+        match &self.inner {
+            YamlNode::TaggedNode(inner) => Some(PyTaggedNode {
+                inner: inner.clone(),
+            }),
+            _ => None,
+        }
+    }
+
     /// View this node as a `Scalar`, or `None` if it is not a scalar.
     fn as_scalar(&self) -> Option<PyScalar> {
         self.inner
@@ -164,6 +221,78 @@ impl PyNode {
 
     fn __repr__(&self) -> String {
         format!("<yaml_edit.Node kind={} {:?}>", self.kind(), self.__str__())
+    }
+}
+
+/// An alias (`*name`) referring to an anchored node.
+#[pyclass(name = "Alias", unsendable, module = "yaml_edit._yaml_edit")]
+struct PyAlias {
+    inner: Alias,
+}
+
+#[pymethods]
+impl PyAlias {
+    /// Create an alias to the anchor `name`, for use as a value.
+    #[new]
+    fn new(name: &str) -> Self {
+        PyAlias {
+            inner: Alias::new(name),
+        }
+    }
+
+    /// The anchor name, without the leading `*`.
+    fn name(&self) -> String {
+        self.inner.name()
+    }
+
+    fn __str__(&self) -> String {
+        self.inner.value()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<yaml_edit.Alias {:?}>", self.inner.value())
+    }
+}
+
+/// A node with an explicit tag, such as `!custom value` or `!!set`.
+#[pyclass(name = "TaggedNode", unsendable, module = "yaml_edit._yaml_edit")]
+struct PyTaggedNode {
+    inner: TaggedNode,
+}
+
+#[pymethods]
+impl PyTaggedNode {
+    /// The tag as written, such as "!custom" or "!!set".
+    fn tag(&self) -> Option<String> {
+        self.inner.tag()
+    }
+
+    /// The tagged value as a `Scalar`, or `None` if it is a collection.
+    fn value(&self) -> Option<PyScalar> {
+        self.inner.value().map(|inner| PyScalar { inner })
+    }
+
+    /// The tagged value as a string, or `None` if it is a collection.
+    fn as_string(&self) -> Option<String> {
+        self.inner.as_string()
+    }
+
+    /// The tagged value as a `Mapping`, or `None` if it is not a mapping.
+    fn as_mapping(&self) -> Option<PyMapping> {
+        self.inner.as_mapping().map(|inner| PyMapping { inner })
+    }
+
+    /// The tagged value as a `Sequence`, or `None` if it is not a sequence.
+    fn as_sequence(&self) -> Option<PySequence> {
+        self.inner.as_sequence().map(|inner| PySequence { inner })
+    }
+
+    fn __str__(&self) -> String {
+        self.inner.to_string()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<yaml_edit.TaggedNode {:?}>", self.inner.to_string())
     }
 }
 
@@ -254,8 +383,8 @@ impl PyEntry {
 
     /// Replace this entry's value in place, preserving the key and formatting.
     fn set_value(&self, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        let arg = ScalarArg::extract(value)?;
-        call_with_scalar!(&arg, |v| self.inner.set_value(v, self.flow_context));
+        let arg = ValueArg::extract(value)?;
+        call_with_value!(&arg, |v| self.inner.set_value(v, self.flow_context));
         Ok(())
     }
 
@@ -285,6 +414,21 @@ struct PyMapping {
 
 #[pymethods]
 impl PyMapping {
+    /// Create an empty, detached mapping, for use as a value.
+    ///
+    /// Pass `flow=True` for a flow-style mapping (`{}`).
+    #[new]
+    #[pyo3(signature = (flow=false))]
+    fn new(flow: bool) -> Self {
+        PyMapping {
+            inner: if flow {
+                Mapping::new_flow()
+            } else {
+                Mapping::new()
+            },
+        }
+    }
+
     fn __len__(&self) -> usize {
         self.inner.len()
     }
@@ -331,8 +475,8 @@ impl PyMapping {
 
     /// Set `key` to `value`, inserting a new entry or updating an existing one.
     fn set(&self, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        let arg = ScalarArg::extract(value)?;
-        call_with_scalar!(&arg, |v| self.inner.set(key, v));
+        let arg = ValueArg::extract(value)?;
+        call_with_value!(&arg, |v| self.inner.set(key, v));
         Ok(())
     }
 
@@ -577,6 +721,21 @@ struct PySequence {
 
 #[pymethods]
 impl PySequence {
+    /// Create an empty, detached sequence, for use as a value.
+    ///
+    /// Pass `flow=True` for a flow-style sequence (`[]`).
+    #[new]
+    #[pyo3(signature = (flow=false))]
+    fn new(flow: bool) -> Self {
+        PySequence {
+            inner: if flow {
+                Sequence::new_flow()
+            } else {
+                Sequence::new()
+            },
+        }
+    }
+
     fn __len__(&self) -> usize {
         self.inner.len()
     }
@@ -611,27 +770,27 @@ impl PySequence {
 
     /// Append `value` to the end of the sequence.
     fn push(&self, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        let arg = ScalarArg::extract(value)?;
-        call_with_scalar!(&arg, |v| self.inner.push(v));
+        let arg = ValueArg::extract(value)?;
+        call_with_value!(&arg, |v| self.inner.push(v));
         Ok(())
     }
 
     /// Insert `value` before `index`.
     fn insert(&self, index: usize, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        let arg = ScalarArg::extract(value)?;
-        call_with_scalar!(&arg, |v| self.inner.insert(index, v));
+        let arg = ValueArg::extract(value)?;
+        call_with_value!(&arg, |v| self.inner.insert(index, v));
         Ok(())
     }
 
     /// Replace the element at `index`, returning `True` on success.
     fn set(&self, index: usize, value: &Bound<'_, PyAny>) -> PyResult<bool> {
-        let arg = ScalarArg::extract(value)?;
-        Ok(call_with_scalar!(&arg, |v| self.inner.set(index, v)))
+        let arg = ValueArg::extract(value)?;
+        Ok(call_with_value!(&arg, |v| self.inner.set(index, v)))
     }
 
     fn __setitem__(&self, index: usize, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        let arg = ScalarArg::extract(value)?;
-        if call_with_scalar!(&arg, |v| self.inner.set(index, v)) {
+        let arg = ValueArg::extract(value)?;
+        if call_with_value!(&arg, |v| self.inner.set(index, v)) {
             Ok(())
         } else {
             Err(PyIndexError::new_err("sequence index out of range"))
@@ -753,6 +912,11 @@ impl PyDocument {
         self.inner.as_scalar().map(|inner| PyScalar { inner })
     }
 
+    /// The document root as a tagged node, or `None` if it is not tagged.
+    fn as_tagged(&self) -> Option<PyTaggedNode> {
+        self.inner.as_tagged().map(|inner| PyTaggedNode { inner })
+    }
+
     /// A merged view of the root mapping, resolving aliases and merge keys
     /// (`<<`), or `None` if the root is not a mapping.
     ///
@@ -796,8 +960,8 @@ impl PyDocument {
     ///
     /// Raises `TypeError` if the root is not a mapping.
     fn set(&self, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        let arg = ScalarArg::extract(value)?;
-        if call_with_scalar!(&arg, |v| self.inner.set(key, v)) {
+        let arg = ValueArg::extract(value)?;
+        if call_with_value!(&arg, |v| self.inner.set(key, v)) {
             Ok(())
         } else {
             Err(PyTypeError::new_err("document root is not a mapping"))
@@ -938,5 +1102,7 @@ fn _yaml_edit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyScalar>()?;
     m.add_class::<PyNode>()?;
     m.add_class::<PyEntry>()?;
+    m.add_class::<PyAlias>()?;
+    m.add_class::<PyTaggedNode>()?;
     Ok(())
 }

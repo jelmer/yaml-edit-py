@@ -112,9 +112,27 @@ The merged view is read-only; edit through the original `Document` or `Mapping`.
 
 ## Supported value types
 
-Scalar values passed to `set`, `push`, and `insert` may be `str`, `int`,
-`float`, or `bool`. `None` is rejected because the underlying editor has no way
-to emit a YAML null scalar.
+Values passed to `set`, `push`, and `insert` may be `str`, `int`, `float`,
+`bool`, or `None` (written as `null`). They may also be YAML nodes: a `Mapping`
+or `Sequence` (including new empty ones created with `Mapping()` or
+`Sequence(flow=True)`), a `Scalar`, `Alias`, `TaggedNode`, or a `Node` returned
+by a getter. Nodes are inserted as a copy.
+
+```python
+from yaml_edit import Alias, Mapping
+
+doc = Document.parse("base: &b\n  k: v\n")
+server = Mapping()
+server["host"] = "localhost"
+doc.set("server", server)
+doc.set("ref", Alias("b"))
+print(doc, end="")
+# base: &b
+#   k: v
+# server:
+#   host: localhost
+# ref: *b
+```
 
 ## License
 

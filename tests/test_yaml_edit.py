@@ -1,12 +1,14 @@
 import unittest
 
 from yaml_edit import (
+    Alias,
     Document,
     Entry,
     Mapping,
     MergedMapping,
     Scalar,
     Sequence,
+    TaggedNode,
     YamlFile,
 )
 
@@ -77,10 +79,11 @@ class DocumentTests(unittest.TestCase):
         doc.set("flag", True)
         self.assertEqual(str(doc["flag"]), "true")
 
-    def test_none_rejected(self):
-        doc = Document()
-        with self.assertRaises(TypeError):
-            doc.set("x", None)
+    def test_none_is_null(self):
+        doc = Document.parse("a: 1\n")
+        doc.set("x", None)
+        self.assertEqual(str(doc), "a: 1\nx: null\n")
+        self.assertTrue(doc["x"].as_scalar().is_null())
 
     def test_unsupported_type_rejected(self):
         doc = Document()
@@ -384,6 +387,110 @@ class MergedMappingTests(unittest.TestCase):
         merged = Document.parse("a:\n  <<: [1]\n  b: 1\n").merged()
         with self.assertRaises(ValueError):
             merged.get_merged("a")
+
+
+class NodeValueTests(unittest.TestCase):
+    def test_set_block_mapping(self):
+        doc = Document.parse("a: 1\n")
+        child = Mapping()
+        child["x"] = 1
+        child["y"] = "two"
+        doc.set("child", child)
+        self.assertEqual(str(doc), "a: 1\nchild:\n  x: 1\n  y: two\n")
+
+    def test_set_flow_collections(self):
+        doc = Document.parse("a: 1\n")
+        doc.set("m", Mapping(flow=True))
+        doc.set("s", Sequence(flow=True))
+        self.assertEqual(str(doc), "a: 1\nm: {}\ns: []\n")
+
+    def test_new_collections_are_empty(self):
+        self.assertTrue(Mapping().is_empty())
+        self.assertFalse(Mapping().is_flow_style())
+        self.assertTrue(Mapping(flow=True).is_flow_style())
+        self.assertEqual(len(Sequence()), 0)
+        self.assertTrue(Sequence(flow=True).is_flow_style())
+
+    def test_push_sequence_and_null(self):
+        seq = Document.parse("- 1\n").as_sequence()
+        seq.push(None)
+        seq.push(Sequence(flow=True))
+        self.assertEqual(str(seq), "- 1\n- null\n- []\n")
+
+    def test_copy_node_value(self):
+        doc = Document.parse("a:\n  k: v\n")
+        doc.set("b", doc["a"])
+        self.assertEqual(str(doc), "a:\n  k: v\nb:\n  k: v\n")
+
+    def test_entry_set_value_node(self):
+        doc = Document.parse("a: 1\n")
+        doc.as_mapping().entries()[0].set_value(Sequence(flow=True))
+        self.assertEqual(str(doc), "a: []\n")
+
+    def test_set_alias(self):
+        doc = Document.parse("base: &b\n  k: v\n")
+        doc.set("ref", Alias("b"))
+        self.assertEqual(str(doc), "base: &b\n  k: v\nref: *b\n")
+        self.assertEqual(str(doc.merged()["ref"].as_mapping()["k"]), "v")
+
+
+class AliasTests(unittest.TestCase):
+    def test_alias_node(self):
+        doc = Document.parse("base: &b 1\nref: *b\n")
+        node = doc["ref"]
+        self.assertEqual(node.kind, "alias")
+        self.assertTrue(node.is_alias())
+        alias = node.as_alias()
+        self.assertIsInstance(alias, Alias)
+        self.assertEqual(alias.name(), "b")
+        self.assertEqual(str(alias), "*b")
+
+    def test_non_alias(self):
+        node = Document.parse("a: 1\n")["a"]
+        self.assertFalse(node.is_alias())
+        self.assertIsNone(node.as_alias())
+
+    def test_new_alias(self):
+        self.assertEqual(Alias("anchor").name(), "anchor")
+        self.assertEqual(str(Alias("anchor")), "*anchor")
+
+
+class TaggedNodeTests(unittest.TestCase):
+    def test_tagged_scalar(self):
+        node = Document.parse("t: !custom val\n")["t"]
+        self.assertEqual(node.kind, "tagged")
+        self.assertTrue(node.is_tagged())
+        tagged = node.as_tagged()
+        self.assertIsInstance(tagged, TaggedNode)
+        self.assertEqual(tagged.tag(), "!custom")
+        self.assertEqual(tagged.as_string(), "val")
+        self.assertEqual(str(tagged.value()), "val")
+        self.assertIsNone(tagged.as_mapping())
+        self.assertEqual(str(tagged), "!custom val")
+
+    def test_tagged_mapping(self):
+        tagged = Document.parse("t: !thing\n  a: 1\n")["t"].as_tagged()
+        self.assertEqual(tagged.tag(), "!thing")
+        self.assertIsNone(tagged.value())
+        self.assertEqual(tagged.as_mapping().keys(), ["a"])
+
+    def test_tagged_sequence(self):
+        tagged = Document.parse("t: !list\n  - 1\n")["t"].as_tagged()
+        self.assertEqual(len(tagged.as_sequence()), 1)
+
+    def test_non_tagged(self):
+        node = Document.parse("a: 1\n")["a"]
+        self.assertFalse(node.is_tagged())
+        self.assertIsNone(node.as_tagged())
+
+    def test_document_root_tagged(self):
+        self.assertEqual(Document.parse("!foo bar\n").as_tagged().tag(), "!foo")
+        self.assertIsNone(Document.parse("a: 1\n").as_tagged())
+
+    def test_copy_tagged_value(self):
+        doc = Document.parse("t: !custom val\n")
+        doc.set("u", doc["t"].as_tagged())
+        self.assertEqual(str(doc), "t: !custom val\nu: !custom val\n")
 
 
 class YamlFileTests(unittest.TestCase):

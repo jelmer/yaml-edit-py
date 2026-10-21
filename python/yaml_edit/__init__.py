@@ -12,6 +12,7 @@ targeted edits that leave the rest of the document untouched.
 """
 
 from ._yaml_edit import (
+    Alias,
     Document,
     Entry,
     Mapping,
@@ -19,10 +20,12 @@ from ._yaml_edit import (
     Node,
     Scalar,
     Sequence,
+    TaggedNode,
     YamlFile,
 )
 
 __all__ = [
+    "Alias",
     "Document",
     "Entry",
     "Mapping",
@@ -30,5 +33,6 @@ __all__ = [
     "Node",
     "Scalar",
     "Sequence",
+    "TaggedNode",
     "YamlFile",
 ]
