@@ -77,6 +77,29 @@ for key in mapping:
 `Document` itself supports the same subscripting for top-level keys, and
 `Sequence` supports indexing, assignment, and `del` by position.
 
+Dotted paths reach into nested structures, creating intermediate mappings
+when setting:
+
+```python
+doc = Document.parse("server:\n  host: localhost\n  ports:\n    - 80\n")
+print(str(doc.get_path("server.ports[0]")))
+# 80
+doc.set_path("server.tls.enabled", True)
+doc.remove_path("server.host")
+print(doc, end="")
+# server:
+#   ports:
+#     - 80
+#   tls:
+#     enabled: true
+```
+
+`get_path` returns `None` and `remove_path` returns `False` when the path does
+not exist; a malformed path, or one that descends into a scalar, raises
+`ValueError`. Writing through an alias is refused unless you pass
+`alias_policy="follow"` (modify the anchored node) or `alias_policy="expand"`
+(replace the alias with a copy first).
+
 Multi-document streams:
 
 ```python

@@ -493,6 +493,93 @@ class TaggedNodeTests(unittest.TestCase):
         self.assertEqual(str(doc), "t: !custom val\nu: !custom val\n")
 
 
+class PathTests(unittest.TestCase):
+    YAML = (
+        "server:\n"
+        "  host: localhost\n"
+        "  ports:\n"
+        "    - 80\n"
+        "    - 443\n"
+        "name: x\n"
+        "shared: &s\n"
+        "  t: 1\n"
+        "svc: *s\n"
+    )
+
+    def test_get_path(self):
+        doc = Document.parse(self.YAML)
+        self.assertEqual(str(doc.get_path("server.host")), "localhost")
+        self.assertEqual(str(doc.get_path("server.ports[1]")), "443")
+        self.assertEqual(str(doc.get_path("server.ports.0")), "80")
+
+    def test_get_path_missing(self):
+        doc = Document.parse(self.YAML)
+        self.assertIsNone(doc.get_path("server.missing"))
+        self.assertIsNone(Document().get_path("a"))
+
+    def test_get_path_follows_alias(self):
+        doc = Document.parse(self.YAML)
+        self.assertEqual(str(doc.get_path("svc.t")), "1")
+        with self.assertRaises(ValueError):
+            doc.get_path("svc.t", alias_policy="refuse")
+
+    def test_get_path_errors(self):
+        doc = Document.parse(self.YAML)
+        for path in ["", "server..host", "name.first"]:
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                doc.get_path(path)
+
+    def test_invalid_alias_policy(self):
+        with self.assertRaises(ValueError):
+            Document.parse(self.YAML).get_path("name", alias_policy="bogus")
+
+    def test_set_path_creates_intermediates(self):
+        doc = Document.parse("name: x\n")
+        doc.set_path("db.primary.host", "h")
+        self.assertEqual(str(doc), "name: x\ndb:\n  primary:\n    host: h\n")
+
+    def test_set_path_sequence_index(self):
+        doc = Document.parse("ports:\n  - 80\n")
+        doc.set_path("ports[1]", 443)
+        self.assertEqual(str(doc), "ports:\n  - 80\n  - 443\n")
+
+    def test_set_path_through_scalar_raises(self):
+        doc = Document.parse("name: x\n")
+        with self.assertRaises(ValueError):
+            doc.set_path("name.first", "y")
+        self.assertEqual(str(doc), "name: x\n")
+
+    def test_set_path_alias_policies(self):
+        doc = Document.parse("shared: &s\n  t: 1\nsvc: *s\n")
+        with self.assertRaises(ValueError):
+            doc.set_path("svc.t", 2)
+        doc.set_path("svc.t", 3, alias_policy="expand")
+        self.assertEqual(str(doc), "shared: &s\n  t: 1\nsvc:\n  t: 3\n")
+
+    def test_set_path_follow_alias(self):
+        doc = Document.parse("shared: &s\n  t: 1\nsvc: *s\n")
+        doc.set_path("svc.t", 2, alias_policy="follow")
+        self.assertEqual(str(doc), "shared: &s\n  t: 2\nsvc: *s\n")
+
+    def test_remove_path(self):
+        doc = Document.parse(self.YAML)
+        self.assertTrue(doc.remove_path("server.host"))
+        self.assertFalse(doc.remove_path("server.host"))
+        self.assertIsNone(doc.get_path("server.host"))
+        self.assertFalse(Document().remove_path("a"))
+
+    def test_remove_path_errors(self):
+        with self.assertRaises(ValueError):
+            Document.parse(self.YAML).remove_path("name.first")
+
+    def test_mapping_paths(self):
+        mapping = Document.parse(self.YAML).as_mapping()
+        self.assertEqual(str(mapping.get_path("server.host")), "localhost")
+        mapping.set_path("server.host", "example.com")
+        self.assertEqual(str(mapping.get_path("server.host")), "example.com")
+        self.assertTrue(mapping.remove_path("server.host"))
+
+
 class YamlFileTests(unittest.TestCase):
     def test_multiple_documents(self):
         stream = YamlFile.parse("a: 1\n---\nb: 2\n")

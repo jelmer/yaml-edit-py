@@ -11,6 +11,7 @@ use pyo3::types::{PyBool, PyFloat, PyInt, PyString};
 use std::str::FromStr;
 
 use yaml_edit::anchor_resolution::{AnchorRegistry, DocumentMergedExt, MergedMapping};
+use yaml_edit::path::{AliasPolicy, PathError, YamlPath};
 use yaml_edit::{
     Alias, Document, Mapping, MappingEntry, Scalar, Sequence, TaggedNode, YamlFile, YamlNode,
 };
@@ -114,6 +115,50 @@ macro_rules! call_with_value {
 /// Wrap a YAML or alias resolution error as a Python `ValueError`.
 fn map_err(err: impl std::fmt::Display) -> PyErr {
     PyValueError::new_err(err.to_string())
+}
+
+/// Parse an alias policy name ("refuse", "follow" or "expand").
+fn parse_alias_policy(policy: &str) -> PyResult<AliasPolicy> {
+    match policy {
+        "refuse" => Ok(AliasPolicy::Refuse),
+        "follow" => Ok(AliasPolicy::Follow),
+        "expand" => Ok(AliasPolicy::Expand),
+        _ => Err(PyValueError::new_err(format!(
+            "invalid alias policy {policy:?}; expected \"refuse\", \"follow\" or \"expand\""
+        ))),
+    }
+}
+
+/// Look up `path`, returning `None` if the target does not exist (or the
+/// document is empty) and raising `ValueError` for any other failure.
+fn get_path(target: &impl YamlPath, path: &str, alias_policy: &str) -> PyResult<Option<PyNode>> {
+    match target.try_get_path_with(path, parse_alias_policy(alias_policy)?) {
+        Ok(inner) => Ok(Some(PyNode { inner })),
+        Err(PathError::NotFound { .. } | PathError::NoRoot) => Ok(None),
+        Err(e) => Err(map_err(e)),
+    }
+}
+
+/// Set `path` to `value`, creating intermediate mappings as needed.
+fn set_path(
+    target: &impl YamlPath,
+    path: &str,
+    value: &Bound<'_, PyAny>,
+    alias_policy: &str,
+) -> PyResult<()> {
+    let policy = parse_alias_policy(alias_policy)?;
+    let arg = ValueArg::extract(value)?;
+    call_with_value!(&arg, |v| target.try_set_path_with(path, v, policy)).map_err(map_err)
+}
+
+/// Remove `path`, returning `False` if the target does not exist (or the
+/// document is empty) and raising `ValueError` for any other failure.
+fn remove_path(target: &impl YamlPath, path: &str, alias_policy: &str) -> PyResult<bool> {
+    match target.try_remove_path_with(path, parse_alias_policy(alias_policy)?) {
+        Ok(_) => Ok(true),
+        Err(PathError::NotFound { .. } | PathError::NoRoot) => Ok(false),
+        Err(e) => Err(map_err(e)),
+    }
 }
 
 /// A YAML node returned from a getter: scalar, mapping, sequence, or other.
@@ -580,6 +625,34 @@ impl PyMapping {
         self.inner.remove_nth_occurrence(key, n).is_some()
     }
 
+    /// Look up a dotted path such as "server.ports[0]", or `None` if absent.
+    ///
+    /// Raises `ValueError` for a malformed path or one that descends into a
+    /// scalar. `alias_policy` is "follow" (the default), "refuse" or "expand".
+    #[pyo3(signature = (path, alias_policy="follow"))]
+    fn get_path(&self, path: &str, alias_policy: &str) -> PyResult<Option<PyNode>> {
+        get_path(&self.inner, path, alias_policy)
+    }
+
+    /// Set a dotted path, creating intermediate mappings as needed.
+    ///
+    /// Raises `ValueError` if the path cannot be set. Writing through an alias
+    /// is refused by default; pass `alias_policy="follow"` to modify the
+    /// anchored node, or "expand" to replace the alias with a copy first.
+    #[pyo3(signature = (path, value, alias_policy="refuse"))]
+    fn set_path(&self, path: &str, value: &Bound<'_, PyAny>, alias_policy: &str) -> PyResult<()> {
+        set_path(&self.inner, path, value, alias_policy)
+    }
+
+    /// Remove a dotted path, returning `True` if it was present.
+    ///
+    /// Raises `ValueError` for a malformed path or one that descends into a
+    /// scalar.
+    #[pyo3(signature = (path, alias_policy="refuse"))]
+    fn remove_path(&self, path: &str, alias_policy: &str) -> PyResult<bool> {
+        remove_path(&self.inner, path, alias_policy)
+    }
+
     fn __str__(&self) -> String {
         self.inner.to_string()
     }
@@ -992,6 +1065,34 @@ impl PyDocument {
     /// The top-level keys, in document order.
     fn keys(&self) -> Vec<String> {
         self.inner.keys().map(|k| k.to_string()).collect()
+    }
+
+    /// Look up a dotted path such as "server.ports[0]", or `None` if absent.
+    ///
+    /// Raises `ValueError` for a malformed path or one that descends into a
+    /// scalar. `alias_policy` is "follow" (the default), "refuse" or "expand".
+    #[pyo3(signature = (path, alias_policy="follow"))]
+    fn get_path(&self, path: &str, alias_policy: &str) -> PyResult<Option<PyNode>> {
+        get_path(&self.inner, path, alias_policy)
+    }
+
+    /// Set a dotted path, creating intermediate mappings as needed.
+    ///
+    /// Raises `ValueError` if the path cannot be set. Writing through an alias
+    /// is refused by default; pass `alias_policy="follow"` to modify the
+    /// anchored node, or "expand" to replace the alias with a copy first.
+    #[pyo3(signature = (path, value, alias_policy="refuse"))]
+    fn set_path(&self, path: &str, value: &Bound<'_, PyAny>, alias_policy: &str) -> PyResult<()> {
+        set_path(&self.inner, path, value, alias_policy)
+    }
+
+    /// Remove a dotted path, returning `True` if it was present.
+    ///
+    /// Raises `ValueError` for a malformed path or one that descends into a
+    /// scalar.
+    #[pyo3(signature = (path, alias_policy="refuse"))]
+    fn remove_path(&self, path: &str, alias_policy: &str) -> PyResult<bool> {
+        remove_path(&self.inner, path, alias_policy)
     }
 
     /// Serialize the document back to a string, preserving formatting.

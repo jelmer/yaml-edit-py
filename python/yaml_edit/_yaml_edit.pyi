@@ -1,9 +1,10 @@
 """Type stubs for the yaml-edit native extension."""
 
 from collections.abc import Iterator
-from typing import TypeAlias
+from typing import Literal, TypeAlias
 
 ScalarValue: TypeAlias = str | int | float | bool
+AliasPolicy: TypeAlias = Literal["refuse", "follow", "expand"]
 Value: TypeAlias = (
     ScalarValue | None | Node | Mapping | Sequence | Scalar | Alias | TaggedNode
 )
@@ -99,6 +100,13 @@ class Mapping:
     def find_all_entries(self, key: str) -> list[Entry]: ...
     def count_key(self, key: str) -> int: ...
     def remove_nth(self, key: str, n: int) -> bool: ...
+    def get_path(
+        self, path: str, alias_policy: AliasPolicy = "follow"
+    ) -> Node | None: ...
+    def set_path(
+        self, path: str, value: Value, alias_policy: AliasPolicy = "refuse"
+    ) -> None: ...
+    def remove_path(self, path: str, alias_policy: AliasPolicy = "refuse") -> bool: ...
 
 class MergedMapping:
     """A read-only mapping view with aliases and merge keys (``<<``) resolved.
@@ -169,6 +177,13 @@ class Document:
     def __delitem__(self, key: str) -> None: ...
     def rename_key(self, old_key: str, new_key: str) -> bool: ...
     def keys(self) -> list[str]: ...
+    def get_path(
+        self, path: str, alias_policy: AliasPolicy = "follow"
+    ) -> Node | None: ...
+    def set_path(
+        self, path: str, value: Value, alias_policy: AliasPolicy = "refuse"
+    ) -> None: ...
+    def remove_path(self, path: str, alias_policy: AliasPolicy = "refuse") -> bool: ...
 
 class YamlFile:
     """A YAML stream, which may hold multiple documents and directives."""
