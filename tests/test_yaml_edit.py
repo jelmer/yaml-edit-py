@@ -362,6 +362,21 @@ class MergedMappingTests(unittest.TestCase):
         merged = Document.parse(self.MERGE_YAML).merged()
         self.assertIsNone(merged.get_merged("absent"))
 
+    def test_undefined_merge_alias_raises(self):
+        doc = Document.parse("<<: *missing\nb: 1\n")
+        with self.assertRaises(ValueError):
+            doc.merged()
+
+    def test_nested_undefined_merge_alias_raises(self):
+        merged = Document.parse("a:\n  <<: *missing\n  b: 1\n").merged()
+        with self.assertRaises(ValueError):
+            merged.get_merged("a")
+
+    def test_invalid_merge_operand_raises(self):
+        merged = Document.parse("a:\n  <<: [1]\n  b: 1\n").merged()
+        with self.assertRaises(ValueError):
+            merged.get_merged("a")
+
 
 class YamlFileTests(unittest.TestCase):
     def test_multiple_documents(self):

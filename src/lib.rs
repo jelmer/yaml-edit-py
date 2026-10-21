@@ -82,8 +82,8 @@ macro_rules! call_with_scalar {
     };
 }
 
-/// Wrap a YAML error as a Python `ValueError`.
-fn map_err(err: yaml_edit::YamlError) -> PyErr {
+/// Wrap a YAML or alias resolution error as a Python `ValueError`.
+fn map_err(err: impl std::fmt::Display) -> PyErr {
     PyValueError::new_err(err.to_string())
 }
 
@@ -483,36 +483,39 @@ struct PyMergedMapping {
 
 impl PyMergedMapping {
     /// Borrow `base` and `registry` as a `MergedMapping` for a single query.
-    fn view(&self) -> MergedMapping<'_> {
-        MergedMapping::new(self.base.clone(), &self.registry)
+    ///
+    /// The view is rebuilt on every query so that it reflects later edits to
+    /// the document, which can also make it fail to resolve.
+    fn view(&self) -> PyResult<MergedMapping<'_>> {
+        MergedMapping::new(self.base.clone(), &self.registry).map_err(map_err)
     }
 }
 
 #[pymethods]
 impl PyMergedMapping {
-    fn __len__(&self) -> usize {
-        self.view().len()
+    fn __len__(&self) -> PyResult<usize> {
+        Ok(self.view()?.len())
     }
 
-    fn is_empty(&self) -> bool {
-        self.view().is_empty()
+    fn is_empty(&self) -> PyResult<bool> {
+        Ok(self.view()?.is_empty())
     }
 
-    fn contains_key(&self, key: &str) -> bool {
-        self.view().contains_key(key)
+    fn contains_key(&self, key: &str) -> PyResult<bool> {
+        Ok(self.view()?.contains_key(key))
     }
 
-    fn __contains__(&self, key: &str) -> bool {
-        self.view().contains_key(key)
+    fn __contains__(&self, key: &str) -> PyResult<bool> {
+        Ok(self.view()?.contains_key(key))
     }
 
     /// Look up a key, resolving aliases and merge keys, or `None` if absent.
-    fn get(&self, key: &str) -> Option<PyNode> {
-        self.view().get(key).map(|inner| PyNode { inner })
+    fn get(&self, key: &str) -> PyResult<Option<PyNode>> {
+        Ok(self.view()?.get(key).map(|inner| PyNode { inner }))
     }
 
     fn __getitem__(&self, key: &str) -> PyResult<PyNode> {
-        self.view()
+        self.view()?
             .get(key)
             .map(|inner| PyNode { inner })
             .ok_or_else(|| PyKeyError::new_err(key.to_string()))
@@ -520,40 +523,49 @@ impl PyMergedMapping {
 
     /// Look up a nested mapping, returning another merged view that resolves
     /// against the same anchors.
-    fn get_merged(&self, key: &str) -> Option<PyMergedMapping> {
-        self.view().get_merged(key).map(|nested| PyMergedMapping {
+    fn get_merged(&self, key: &str) -> PyResult<Option<PyMergedMapping>> {
+        let nested = self.view()?.get_merged(key).map_err(map_err)?;
+        Ok(nested.map(|nested| PyMergedMapping {
             base: nested.base().clone(),
             registry: self.registry.clone(),
-        })
+        }))
     }
 
     /// The merged keys, in resolution order (direct entries first).
-    fn keys(&self) -> Vec<String> {
-        self.view().keys().map(|k| k.to_string()).collect()
+    fn keys(&self) -> PyResult<Vec<String>> {
+        Ok(self.view()?.keys().map(|k| k.to_string()).collect())
     }
 
     /// The merged value nodes, in resolution order.
-    fn values(&self) -> Vec<PyNode> {
-        self.view().values().map(|inner| PyNode { inner }).collect()
+    fn values(&self) -> PyResult<Vec<PyNode>> {
+        Ok(self
+            .view()?
+            .values()
+            .map(|inner| PyNode { inner })
+            .collect())
     }
 
     /// (key, value) pairs in the merged view, in resolution order.
-    fn items(&self) -> Vec<(String, PyNode)> {
-        self.view()
+    fn items(&self) -> PyResult<Vec<(String, PyNode)>> {
+        Ok(self
+            .view()?
             .iter()
             .map(|(k, v)| (k.to_string(), PyNode { inner: v }))
-            .collect()
+            .collect())
     }
 
     /// Iterate over the merged keys, like a Python `dict`.
-    fn __iter__(&self) -> PyKeyIterator {
-        PyKeyIterator {
-            keys: self.keys().into_iter(),
-        }
+    fn __iter__(&self) -> PyResult<PyKeyIterator> {
+        Ok(PyKeyIterator {
+            keys: self.keys()?.into_iter(),
+        })
     }
 
-    fn __repr__(&self) -> String {
-        format!("<yaml_edit.MergedMapping len={}>", self.view().len())
+    fn __repr__(&self) -> PyResult<String> {
+        Ok(format!(
+            "<yaml_edit.MergedMapping len={}>",
+            self.view()?.len()
+        ))
     }
 }
 
@@ -745,12 +757,14 @@ impl PyDocument {
     /// (`<<`), or `None` if the root is not a mapping.
     ///
     /// The anchor registry is built from the whole document, so aliases
-    /// pointing at anchors defined elsewhere resolve correctly.
-    fn merged(&self) -> Option<PyMergedMapping> {
-        self.inner.merged().map(|view| PyMergedMapping {
+    /// pointing at anchors defined elsewhere resolve correctly. Raises
+    /// `ValueError` if an alias or merge key cannot be resolved.
+    fn merged(&self) -> PyResult<Option<PyMergedMapping>> {
+        let view = self.inner.merged().map_err(map_err)?;
+        Ok(view.map(|view| PyMergedMapping {
             base: view.as_mapping().base().clone(),
             registry: view.registry().clone(),
-        })
+        }))
     }
 
     fn contains_key(&self, key: &str) -> bool {

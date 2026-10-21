@@ -82,6 +82,8 @@ class MergedMapping:
 
     Has no ``__str__``: a merged view has no single source span, so read its
     resolved contents through ``items``/``get`` rather than ``str()``.
+
+    Raises ``ValueError`` when an alias or merge key cannot be resolved.
     """
 
     def __len__(self) -> int: ...
