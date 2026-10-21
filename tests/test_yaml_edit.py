@@ -580,6 +580,70 @@ class PathTests(unittest.TestCase):
         self.assertTrue(mapping.remove_path("server.host"))
 
 
+class OrderingTests(unittest.TestCase):
+    def test_insert_after_and_before(self):
+        doc = Document.parse("a: 1\nc: 3\n")
+        self.assertTrue(doc.insert_after("a", "b", 2))
+        self.assertTrue(doc.insert_before("a", "z", 0))
+        self.assertEqual(str(doc), "z: 0\na: 1\nb: 2\nc: 3\n")
+
+    def test_insert_after_missing_reference(self):
+        doc = Document.parse("a: 1\n")
+        self.assertFalse(doc.insert_after("nope", "b", 2))
+        self.assertEqual(str(doc), "a: 1\n")
+
+    def test_insert_existing_key_updates_in_place(self):
+        doc = Document.parse("a: 1\nb: 2\nc: 3\n")
+        self.assertTrue(doc.insert_after("c", "a", 10))
+        self.assertEqual(str(doc), "a: 10\nb: 2\nc: 3\n")
+
+    def test_move_after_and_before(self):
+        doc = Document.parse("a: 1\nb: 2\nc: 3\n")
+        self.assertTrue(doc.move_after("c", "a", 10))
+        self.assertEqual(str(doc), "b: 2\nc: 3\na: 10\n")
+        self.assertTrue(doc.move_before("b", "c", 30))
+        self.assertEqual(str(doc), "c: 30\nb: 2\na: 10\n")
+        self.assertFalse(doc.move_before("nope", "c", 1))
+
+    def test_insert_at_index(self):
+        doc = Document.parse("a: 1\nb: 2\n")
+        doc.insert_at_index(1, "x", "y")
+        doc.insert_at_index(100, "end", True)
+        self.assertEqual(str(doc), "a: 1\nx: y\nb: 2\nend: true\n")
+
+    def test_insert_at_index_empty_document(self):
+        doc = Document()
+        doc.insert_at_index(0, "k", "v")
+        self.assertEqual(doc.keys(), ["k"])
+
+    def test_reorder_fields(self):
+        doc = Document.parse("a: 1\nb: 2\nc: 3\nd: 4\n")
+        doc.reorder_fields(["c", "a"])
+        self.assertEqual(str(doc), "c: 3\na: 1\nb: 2\nd: 4\n")
+
+    def test_non_mapping_root_raises(self):
+        doc = Document.parse("- 1\n")
+        with self.assertRaises(TypeError):
+            doc.insert_after("a", "b", 1)
+        with self.assertRaises(TypeError):
+            doc.move_before("a", "b", 1)
+        with self.assertRaises(TypeError):
+            doc.insert_at_index(0, "b", 1)
+        with self.assertRaises(TypeError):
+            doc.reorder_fields(["a"])
+        self.assertEqual(str(doc), "- 1\n")
+
+    def test_mapping_ordering(self):
+        mapping = Document.parse("x: 1\ny: 2\n").as_mapping()
+        self.assertTrue(mapping.insert_after("x", "n", Mapping(flow=True)))
+        self.assertTrue(mapping.insert_before("x", "w", 0))
+        self.assertTrue(mapping.move_after("y", "x", 1))
+        mapping.insert_at_index(0, "first", "f")
+        self.assertEqual(str(mapping), "first: f\nw: 0\nn: {}\ny: 2\nx: 1\n")
+        mapping.reorder_fields(["y", "x"])
+        self.assertEqual(mapping.keys(), ["y", "x", "first", "w", "n"])
+
+
 class YamlFileTests(unittest.TestCase):
     def test_multiple_documents(self):
         stream = YamlFile.parse("a: 1\n---\nb: 2\n")

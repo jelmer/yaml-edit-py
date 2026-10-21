@@ -77,6 +77,18 @@ for key in mapping:
 `Document` itself supports the same subscripting for top-level keys, and
 `Sequence` supports indexing, assignment, and `del` by position.
 
+New keys can be placed relative to existing ones instead of being appended:
+
+```python
+doc = Document.parse("name: demo\nversion: 1.0\n")
+doc.insert_after("name", "description", "A demo")
+doc.reorder_fields(["version"])
+print(doc, end="")
+# version: 1.0
+# name: demo
+# description: A demo
+```
+
 Dotted paths reach into nested structures, creating intermediate mappings
 when setting:
 

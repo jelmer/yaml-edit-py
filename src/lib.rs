@@ -625,6 +625,68 @@ impl PyMapping {
         self.inner.remove_nth_occurrence(key, n).is_some()
     }
 
+    /// Insert `key` immediately after `after_key`.
+    ///
+    /// An existing `key` is updated in place rather than moved. Returns
+    /// `False` if `after_key` is not present.
+    fn insert_after(&self, after_key: &str, key: &str, value: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let arg = ValueArg::extract(value)?;
+        Ok(call_with_value!(&arg, |v| self
+            .inner
+            .insert_after(after_key, key, v)))
+    }
+
+    /// Insert `key` immediately before `before_key`.
+    ///
+    /// An existing `key` is updated in place rather than moved. Returns
+    /// `False` if `before_key` is not present.
+    fn insert_before(
+        &self,
+        before_key: &str,
+        key: &str,
+        value: &Bound<'_, PyAny>,
+    ) -> PyResult<bool> {
+        let arg = ValueArg::extract(value)?;
+        Ok(call_with_value!(&arg, |v| self
+            .inner
+            .insert_before(before_key, key, v)))
+    }
+
+    /// Set `key` and place it immediately after `after_key`, moving it if it
+    /// already exists. Returns `False` if `after_key` is not present.
+    fn move_after(&self, after_key: &str, key: &str, value: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let arg = ValueArg::extract(value)?;
+        Ok(call_with_value!(&arg, |v| self
+            .inner
+            .move_after(after_key, key, v)))
+    }
+
+    /// Set `key` and place it immediately before `before_key`, moving it if
+    /// it already exists. Returns `False` if `before_key` is not present.
+    fn move_before(&self, before_key: &str, key: &str, value: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let arg = ValueArg::extract(value)?;
+        Ok(call_with_value!(&arg, |v| self
+            .inner
+            .move_before(before_key, key, v)))
+    }
+
+    /// Insert `key` at position `index`, or at the end if `index` is past it.
+    ///
+    /// An existing `key` is updated in place rather than moved.
+    fn insert_at_index(&self, index: usize, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let arg = ValueArg::extract(value)?;
+        call_with_value!(&arg, |v| self.inner.insert_at_index(index, key, v));
+        Ok(())
+    }
+
+    /// Reorder entries so the keys in `order` come first, in that order.
+    ///
+    /// Keys not in `order` follow, in their original relative order.
+    fn reorder_fields(&self, order: Vec<String>) -> PyResult<()> {
+        self.inner.reorder_fields(order);
+        Ok(())
+    }
+
     /// Look up a dotted path such as "server.ports[0]", or `None` if absent.
     ///
     /// Raises `ValueError` for a malformed path or one that descends into a
@@ -935,6 +997,14 @@ struct PyDocument {
     inner: Document,
 }
 
+impl PyDocument {
+    fn root_mapping(&self) -> PyResult<Mapping> {
+        self.inner
+            .as_mapping()
+            .ok_or_else(|| PyTypeError::new_err("document root is not a mapping"))
+    }
+}
+
 #[pymethods]
 impl PyDocument {
     /// Create an empty document.
@@ -1065,6 +1135,82 @@ impl PyDocument {
     /// The top-level keys, in document order.
     fn keys(&self) -> Vec<String> {
         self.inner.keys().map(|k| k.to_string()).collect()
+    }
+
+    /// Insert `key` immediately after `after_key`.
+    ///
+    /// An existing `key` is updated in place rather than moved. Returns
+    /// `False` if `after_key` is not present.
+    ///
+    /// Raises `TypeError` if the root is not a mapping.
+    fn insert_after(&self, after_key: &str, key: &str, value: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let mapping = self.root_mapping()?;
+        let arg = ValueArg::extract(value)?;
+        Ok(call_with_value!(&arg, |v| mapping.insert_after(after_key, key, v)))
+    }
+
+    /// Insert `key` immediately before `before_key`.
+    ///
+    /// An existing `key` is updated in place rather than moved. Returns
+    /// `False` if `before_key` is not present.
+    ///
+    /// Raises `TypeError` if the root is not a mapping.
+    fn insert_before(
+        &self,
+        before_key: &str,
+        key: &str,
+        value: &Bound<'_, PyAny>,
+    ) -> PyResult<bool> {
+        let mapping = self.root_mapping()?;
+        let arg = ValueArg::extract(value)?;
+        Ok(call_with_value!(&arg, |v| mapping.insert_before(before_key, key, v)))
+    }
+
+    /// Set `key` and place it immediately after `after_key`, moving it if it
+    /// already exists. Returns `False` if `after_key` is not present.
+    ///
+    /// Raises `TypeError` if the root is not a mapping.
+    fn move_after(&self, after_key: &str, key: &str, value: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let mapping = self.root_mapping()?;
+        let arg = ValueArg::extract(value)?;
+        Ok(call_with_value!(&arg, |v| mapping.move_after(after_key, key, v)))
+    }
+
+    /// Set `key` and place it immediately before `before_key`, moving it if
+    /// it already exists. Returns `False` if `before_key` is not present.
+    ///
+    /// Raises `TypeError` if the root is not a mapping.
+    fn move_before(&self, before_key: &str, key: &str, value: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let mapping = self.root_mapping()?;
+        let arg = ValueArg::extract(value)?;
+        Ok(call_with_value!(&arg, |v| mapping.move_before(before_key, key, v)))
+    }
+
+    /// Insert `key` at position `index`, or at the end if `index` is past it.
+    ///
+    /// An existing `key` is updated in place rather than moved.
+    ///
+    /// Raises `TypeError` if the root is not a mapping.
+    fn insert_at_index(&self, index: usize, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let arg = ValueArg::extract(value)?;
+        if call_with_value!(&arg, |v| self.inner.insert_at_index(index, key, v)) {
+            Ok(())
+        } else {
+            Err(PyTypeError::new_err("document root is not a mapping"))
+        }
+    }
+
+    /// Reorder entries so the keys in `order` come first, in that order.
+    ///
+    /// Keys not in `order` follow, in their original relative order.
+    ///
+    /// Raises `TypeError` if the root is not a mapping.
+    fn reorder_fields(&self, order: Vec<String>) -> PyResult<()> {
+        if self.inner.reorder_fields(order) {
+            Ok(())
+        } else {
+            Err(PyTypeError::new_err("document root is not a mapping"))
+        }
     }
 
     /// Look up a dotted path such as "server.ports[0]", or `None` if absent.
