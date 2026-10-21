@@ -181,5 +181,6 @@ name = "yaml-edit-py"
 version = "0.1.4"
 dependencies = [
  "pyo3",
+ "rowan",
  "yaml-edit",
 ]

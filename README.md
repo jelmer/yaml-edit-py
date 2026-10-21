@@ -19,63 +19,57 @@ A Rust toolchain is required to build from source.
 
 ## Usage
 
+`Document`, `Mapping` and `Sequence` behave like `dict` and `list`, and edits
+preserve the surrounding formatting and comments:
+
 ```python
 from yaml_edit import Document
 
-doc = Document.parse("name: old-project\nversion: 1.0.0\n")
-doc.set("name", "new-project")
-doc.set("version", "2.0.0")
-print(doc, end="")
-# name: new-project
-# version: 2.0.0
-```
-
-Edits preserve surrounding formatting and comments:
-
-```python
 doc = Document.parse("# project config\nname: demo   # the name\ntags:\n  - a\n  - b\n")
-mapping = doc.as_mapping()
-mapping.set("name", "renamed")
+doc["name"] = "renamed"
+doc["tags"].as_sequence().append("c")
 print(doc, end="")
 # # project config
 # name: renamed   # the name
 # tags:
 #   - a
 #   - b
+#   - c
 ```
 
-Working with nested structures:
+Values come back as `Node` objects, which keep their place in the document but
+compare equal to the Python values they hold. `to_python()` converts a node, or
+a whole document, to plain Python objects:
 
 ```python
-doc = Document.parse("servers:\n  - web\n  - db\n")
-servers = doc.as_mapping().get_sequence("servers")
-servers.push("cache")
+doc = Document.parse("port: 8080\nhosts: [a, b]\n1: one\n")
+print(doc["port"] == 8080, doc["hosts"] == ["a", "b"])
+# True True
+print(doc.keys())
+# ['port', 'hosts', 1]
+print(doc.to_python())
+# {'port': 8080, 'hosts': ['a', 'b'], 1: 'one'}
+```
+
+Keys may be strings, numbers, booleans or `None`. Values may be any of those,
+or a `dict`, `list` or `tuple`, which become block mappings and sequences:
+
+```python
+doc = Document.parse("name: demo\n")
+doc["server"] = {"host": "localhost", "ports": [80, 443]}
 print(doc, end="")
-# servers:
-#   - web
-#   - db
-#   - cache
+# name: demo
+# server:
+#   host: localhost
+#   ports:
+#   - 80
+#   - 443
 ```
 
-Mappings and sequences also support the usual `dict` and `list` operations, so
-you can use subscripting instead of `get`/`set`:
-
-```python
-doc = Document.parse("name: demo\nversion: 1.0.0\n")
-mapping = doc.as_mapping()
-mapping["name"] = "renamed"  # same as mapping.set("name", "renamed")
-print(str(mapping["version"]))  # same as mapping.get("version")
-# 1.0.0
-print("name" in mapping)
-# True
-del mapping["version"]
-for key in mapping:
-    print(key)
-# name
-```
-
-`Document` itself supports the same subscripting for top-level keys, and
-`Sequence` supports indexing, assignment, and `del` by position.
+The rest of the `dict` and `list` interfaces work too: `get` with a default,
+`pop`, `setdefault`, `update`, negative indices and slices, `insert`,
+`extend`, `index`, `count`, `remove` and `reverse`. `Mapping` and `Sequence`
+are registered as `collections.abc.MutableMapping` and `MutableSequence`.
 
 New keys can be placed relative to existing ones instead of being appended:
 
@@ -94,7 +88,7 @@ when setting:
 
 ```python
 doc = Document.parse("server:\n  host: localhost\n  ports:\n    - 80\n")
-print(str(doc.get_path("server.ports[0]")))
+print(doc.get_path("server.ports[0]"))
 # 80
 doc.set_path("server.tls.enabled", True)
 doc.remove_path("server.host")
@@ -108,20 +102,38 @@ print(doc, end="")
 
 `get_path` returns `None` and `remove_path` returns `False` when the path does
 not exist; a malformed path, or one that descends into a scalar, raises
-`ValueError`. Writing through an alias is refused unless you pass
+`PathError`. Writing through an alias is refused unless you pass
 `alias_policy="follow"` (modify the anchored node) or `alias_policy="expand"`
 (replace the alias with a copy first).
 
-Multi-document streams:
+To control how a scalar is written, pass a `ScalarValue`; to refer to an
+anchor, pass an `Alias`:
+
+```python
+from yaml_edit import Alias, ScalarValue
+
+doc = Document.parse("base: &b\n  k: v\n")
+doc["version"] = ScalarValue("1.0", style="double-quoted")
+doc["ref"] = Alias("b")
+print(doc, end="")
+# base: &b
+#   k: v
+# version: "1.0"
+# ref: *b
+```
+
+Multi-document streams behave as a sequence of documents:
 
 ```python
 from yaml_edit import YamlFile
 
 stream = YamlFile.parse("a: 1\n---\nb: 2\n")
-for document in stream.documents():
+for document in stream:
     print(document.keys())
 # ['a']
 # ['b']
+print(stream[-1]["b"])
+# 2
 ```
 
 Resolving anchors and merge keys (`<<`) for reading:
@@ -139,50 +151,35 @@ doc = Document.parse(
 prod = doc.merged().get_merged("prod")
 print(prod.keys())
 # ['host', 'timeout', 'retries']
-print(str(prod["timeout"]))  # the direct entry wins over the merged one
+print(prod["timeout"])  # the direct entry wins over the merged one
 # 60
 ```
 
 The merged view is read-only; edit through the original `Document` or `Mapping`.
 
-Source positions, comments, and error-tolerant parsing are available for
-tools such as linters:
+Source positions, comments, validation and error-tolerant parsing are
+available for tools such as linters:
 
 ```python
-src = "name: demo  # the name\n"
+src = "name: demo  # the name\nname: again\n"
 doc = Document.parse(src)
 print(doc["name"].start_position(src))  # 1-based (line, column)
 # (1, 7)
 print([c.content() for c in doc.comments()])
 # ['the name']
+print([(v.rule, v.location) for v in doc.validate()])
+# [('duplicate_keys', '2:1')]
 doc, errors = Document.parse_relaxed("a: [1, 2\n")
 print(len(errors))
 # 1
 ```
 
-## Supported value types
+## Errors
 
-Values passed to `set`, `push`, and `insert` may be `str`, `int`, `float`,
-`bool`, or `None` (written as `null`). They may also be YAML nodes: a `Mapping`
-or `Sequence` (including new empty ones created with `Mapping()` or
-`Sequence(flow=True)`), a `Scalar`, `Alias`, `TaggedNode`, or a `Node` returned
-by a getter. Nodes are inserted as a copy.
-
-```python
-from yaml_edit import Alias, Mapping
-
-doc = Document.parse("base: &b\n  k: v\n")
-server = Mapping()
-server["host"] = "localhost"
-doc.set("server", server)
-doc.set("ref", Alias("b"))
-print(doc, end="")
-# base: &b
-#   k: v
-# server:
-#   host: localhost
-# ref: *b
-```
+Invalid YAML raises `ParseError`, with `line` and `column` attributes. A bad
+dotted path raises `PathError`, and an undefined or recursive alias
+`ResolveError`. All three derive from `YamlError`, which is a `ValueError`.
+Reading or writing a file raises the usual `OSError` subclasses.
 
 ## License
 
