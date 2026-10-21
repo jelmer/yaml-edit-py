@@ -792,11 +792,16 @@ impl PyDocument {
         self.inner.get_string(key)
     }
 
-    /// Set a top-level key, treating the document root as a mapping.
+    /// Set a top-level key, creating a root mapping if the document is empty.
+    ///
+    /// Raises `TypeError` if the root is not a mapping.
     fn set(&self, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
         let arg = ScalarArg::extract(value)?;
-        call_with_scalar!(&arg, |v| self.inner.set(key, v));
-        Ok(())
+        if call_with_scalar!(&arg, |v| self.inner.set(key, v)) {
+            Ok(())
+        } else {
+            Err(PyTypeError::new_err("document root is not a mapping"))
+        }
     }
 
     fn __setitem__(&self, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {

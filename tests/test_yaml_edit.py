@@ -87,6 +87,14 @@ class DocumentTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             doc.set("x", [1, 2, 3])
 
+    def test_set_on_sequence_root_raises(self):
+        doc = Document.parse("- a\n")
+        with self.assertRaises(TypeError):
+            doc.set("x", 1)
+        with self.assertRaises(TypeError):
+            doc["x"] = 1
+        self.assertEqual(str(doc), "- a\n")
+
 
 class MappingTests(unittest.TestCase):
     def test_as_mapping(self):
