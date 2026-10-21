@@ -13,7 +13,8 @@ use std::str::FromStr;
 use yaml_edit::anchor_resolution::{AnchorRegistry, DocumentMergedExt, MergedMapping};
 use yaml_edit::path::{AliasPolicy, PathError, YamlPath};
 use yaml_edit::{
-    Alias, Document, Mapping, MappingEntry, Scalar, Sequence, TaggedNode, YamlFile, YamlNode,
+    byte_offset_to_line_column, Alias, Comment, Document, Mapping, MappingEntry, Scalar, Sequence,
+    TaggedNode, TextPosition, YamlFile, YamlNode,
 };
 
 /// A value accepted where YAML expects a value, mirroring the `AsYaml`
@@ -115,6 +116,17 @@ macro_rules! call_with_value {
 /// Wrap a YAML or alias resolution error as a Python `ValueError`.
 fn map_err(err: impl std::fmt::Display) -> PyErr {
     PyValueError::new_err(err.to_string())
+}
+
+/// Convert a byte range to a Python `(start, end)` tuple.
+fn span(range: TextPosition) -> (u32, u32) {
+    (range.start, range.end)
+}
+
+/// The 1-based `(line, column)` of a byte offset in `source_text`.
+fn line_column(source_text: &str, offset: u32) -> (usize, usize) {
+    let lc = byte_offset_to_line_column(source_text, offset as usize);
+    (lc.line, lc.column)
 }
 
 /// Parse an alias policy name ("refuse", "follow" or "expand").
@@ -264,6 +276,24 @@ impl PyNode {
         self.inner.to_string()
     }
 
+    /// The `(start, end)` byte offsets of this node in the source text.
+    fn byte_range(&self) -> (u32, u32) {
+        span(self.inner.byte_range())
+    }
+
+    /// The 1-based `(line, column)` where this node starts.
+    ///
+    /// `source_text` is the text the tree was parsed from, or `str()` of the
+    /// enclosing document after edits.
+    fn start_position(&self, source_text: &str) -> (usize, usize) {
+        line_column(source_text, self.inner.byte_range().start)
+    }
+
+    /// The 1-based `(line, column)` where this node ends.
+    fn end_position(&self, source_text: &str) -> (usize, usize) {
+        line_column(source_text, self.inner.byte_range().end)
+    }
+
     fn __repr__(&self) -> String {
         format!("<yaml_edit.Node kind={} {:?}>", self.kind(), self.__str__())
     }
@@ -371,6 +401,11 @@ impl PyScalar {
         self.inner.is_null()
     }
 
+    /// Whether this is a block scalar (`|` literal or `>` folded).
+    fn is_block(&self) -> bool {
+        self.inner.is_block()
+    }
+
     fn as_int(&self) -> Option<i64> {
         self.inner.as_i64()
     }
@@ -392,8 +427,108 @@ impl PyScalar {
         self.inner.as_string()
     }
 
+    /// The `(start, end)` byte offsets of this scalar in the source text.
+    fn byte_range(&self) -> (u32, u32) {
+        span(self.inner.byte_range())
+    }
+
+    /// The 1-based `(line, column)` where this scalar starts.
+    ///
+    /// `source_text` is the text the tree was parsed from, or `str()` of the
+    /// enclosing document after edits.
+    fn start_position(&self, source_text: &str) -> (usize, usize) {
+        line_column(source_text, self.inner.byte_range().start)
+    }
+
+    /// The 1-based `(line, column)` where this scalar ends.
+    fn end_position(&self, source_text: &str) -> (usize, usize) {
+        line_column(source_text, self.inner.byte_range().end)
+    }
+
     fn __repr__(&self) -> String {
         format!("<yaml_edit.Scalar {:?}>", self.inner.as_string())
+    }
+}
+
+/// Reject comment text that would span lines, which `Comment::set_text`
+/// panics on.
+fn check_single_line(text: &str) -> PyResult<()> {
+    if text.contains(['\n', '\r']) {
+        return Err(PyValueError::new_err(format!(
+            "comment text must not contain a newline, got {text:?}"
+        )));
+    }
+    Ok(())
+}
+
+/// A comment (`# ...`) in the source text.
+#[pyclass(name = "Comment", unsendable, module = "yaml_edit._yaml_edit")]
+struct PyComment {
+    inner: Comment,
+}
+
+#[pymethods]
+impl PyComment {
+    /// The full comment text, including the leading `#`.
+    fn text(&self) -> String {
+        self.inner.text().to_string()
+    }
+
+    /// The comment text without the leading `#` and one following space.
+    fn content(&self) -> String {
+        self.inner.content().to_string()
+    }
+
+    /// Replace the full comment text, which must start with `#`.
+    ///
+    /// Raises `ValueError` if `text` does not start with `#` or spans more
+    /// than one line. This handle keeps reporting the old text afterwards;
+    /// fetch the comment again through `comments()` to see the new one.
+    fn set_text(&self, text: &str) -> PyResult<()> {
+        if !text.starts_with('#') {
+            return Err(PyValueError::new_err(format!(
+                "comment text must start with '#', got {text:?}"
+            )));
+        }
+        check_single_line(text)?;
+        self.inner.set_text(text);
+        Ok(())
+    }
+
+    /// Replace the comment content, keeping the `# ` prefix.
+    ///
+    /// Raises `ValueError` if `content` spans more than one line. As with
+    /// `set_text`, this handle keeps reporting the old text afterwards.
+    fn set_content(&self, content: &str) -> PyResult<()> {
+        check_single_line(content)?;
+        self.inner.set_content(content);
+        Ok(())
+    }
+
+    /// The `(start, end)` byte offsets of this comment in the source text.
+    fn byte_range(&self) -> (u32, u32) {
+        span(self.inner.byte_range())
+    }
+
+    /// The 1-based `(line, column)` where this comment starts.
+    ///
+    /// `source_text` is the text the tree was parsed from, or `str()` of the
+    /// enclosing document after edits.
+    fn start_position(&self, source_text: &str) -> (usize, usize) {
+        line_column(source_text, self.inner.byte_range().start)
+    }
+
+    /// The 1-based `(line, column)` where this comment ends.
+    fn end_position(&self, source_text: &str) -> (usize, usize) {
+        line_column(source_text, self.inner.byte_range().end)
+    }
+
+    fn __str__(&self) -> String {
+        self.inner.text().to_string()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<yaml_edit.Comment {:?}>", self.inner.text())
     }
 }
 
@@ -439,6 +574,24 @@ impl PyEntry {
     /// afterwards operates on a node that is no longer part of the document.
     fn remove(&self) {
         self.inner.clone().remove();
+    }
+
+    /// The `(start, end)` byte offsets of this entry in the source text.
+    fn byte_range(&self) -> (u32, u32) {
+        span(self.inner.byte_range())
+    }
+
+    /// The 1-based `(line, column)` where this entry starts.
+    ///
+    /// `source_text` is the text the tree was parsed from, or `str()` of the
+    /// enclosing document after edits.
+    fn start_position(&self, source_text: &str) -> (usize, usize) {
+        line_column(source_text, self.inner.byte_range().start)
+    }
+
+    /// The 1-based `(line, column)` where this entry ends.
+    fn end_position(&self, source_text: &str) -> (usize, usize) {
+        line_column(source_text, self.inner.byte_range().end)
     }
 
     fn __repr__(&self) -> String {
@@ -719,6 +872,24 @@ impl PyMapping {
         self.inner.to_string()
     }
 
+    /// The `(start, end)` byte offsets of this mapping in the source text.
+    fn byte_range(&self) -> (u32, u32) {
+        span(self.inner.byte_range())
+    }
+
+    /// The 1-based `(line, column)` where this mapping starts.
+    ///
+    /// `source_text` is the text the tree was parsed from, or `str()` of the
+    /// enclosing document after edits.
+    fn start_position(&self, source_text: &str) -> (usize, usize) {
+        line_column(source_text, self.inner.byte_range().start)
+    }
+
+    /// The 1-based `(line, column)` where this mapping ends.
+    fn end_position(&self, source_text: &str) -> (usize, usize) {
+        line_column(source_text, self.inner.byte_range().end)
+    }
+
     fn __repr__(&self) -> String {
         format!("<yaml_edit.Mapping len={}>", self.inner.len())
     }
@@ -969,6 +1140,24 @@ impl PySequence {
         self.inner.to_string()
     }
 
+    /// The `(start, end)` byte offsets of this sequence in the source text.
+    fn byte_range(&self) -> (u32, u32) {
+        span(self.inner.byte_range())
+    }
+
+    /// The 1-based `(line, column)` where this sequence starts.
+    ///
+    /// `source_text` is the text the tree was parsed from, or `str()` of the
+    /// enclosing document after edits.
+    fn start_position(&self, source_text: &str) -> (usize, usize) {
+        line_column(source_text, self.inner.byte_range().start)
+    }
+
+    /// The 1-based `(line, column)` where this sequence ends.
+    fn end_position(&self, source_text: &str) -> (usize, usize) {
+        line_column(source_text, self.inner.byte_range().end)
+    }
+
     fn __repr__(&self) -> String {
         format!("<yaml_edit.Sequence len={}>", self.inner.len())
     }
@@ -1029,6 +1218,24 @@ impl PyDocument {
         Document::from_file(path)
             .map(|inner| PyDocument { inner })
             .map_err(map_err)
+    }
+
+    /// Parse a document, recovering from syntax errors instead of raising.
+    ///
+    /// Returns the document and a list of error messages, empty if the text
+    /// parsed cleanly.
+    #[staticmethod]
+    fn parse_relaxed(text: &str) -> (Self, Vec<String>) {
+        let (inner, errors) = Document::from_str_relaxed(text);
+        (PyDocument { inner }, errors)
+    }
+
+    /// The comments in this document, in source order.
+    fn comments(&self) -> Vec<PyComment> {
+        self.inner
+            .comments()
+            .map(|inner| PyComment { inner })
+            .collect()
     }
 
     /// Write the document to a file on disk.
@@ -1246,6 +1453,24 @@ impl PyDocument {
         self.inner.to_string()
     }
 
+    /// The `(start, end)` byte offsets of this document in the source text.
+    fn byte_range(&self) -> (u32, u32) {
+        span(self.inner.byte_range())
+    }
+
+    /// The 1-based `(line, column)` where this document starts.
+    ///
+    /// `source_text` is the text the tree was parsed from, or `str()` of the
+    /// enclosing document after edits.
+    fn start_position(&self, source_text: &str) -> (usize, usize) {
+        line_column(source_text, self.inner.byte_range().start)
+    }
+
+    /// The 1-based `(line, column)` where this document ends.
+    fn end_position(&self, source_text: &str) -> (usize, usize) {
+        line_column(source_text, self.inner.byte_range().end)
+    }
+
     fn __repr__(&self) -> String {
         format!("<yaml_edit.Document {:?}>", self.__str__())
     }
@@ -1275,6 +1500,16 @@ impl PyYamlFile {
             .map_err(map_err)
     }
 
+    /// Parse a YAML stream, recovering from syntax errors instead of raising.
+    ///
+    /// Returns the stream and a list of error messages, empty if the text
+    /// parsed cleanly.
+    #[staticmethod]
+    fn parse_relaxed(text: &str) -> (Self, Vec<String>) {
+        let (inner, errors) = YamlFile::from_str_relaxed(text);
+        (PyYamlFile { inner }, errors)
+    }
+
     /// Parse a YAML stream from a file on disk.
     #[staticmethod]
     fn from_file(path: &str) -> PyResult<Self> {
@@ -1289,6 +1524,14 @@ impl PyYamlFile {
 
     fn is_empty(&self) -> bool {
         self.inner.documents().next().is_none()
+    }
+
+    /// The comments in this stream, in source order.
+    fn comments(&self) -> Vec<PyComment> {
+        self.inner
+            .comments()
+            .map(|inner| PyComment { inner })
+            .collect()
     }
 
     /// The documents in this stream.
@@ -1339,6 +1582,14 @@ impl PyYamlFile {
     }
 }
 
+/// The 1-based `(line, column)` of byte offset `offset` in `text`.
+///
+/// Columns count characters, not bytes.
+#[pyfunction(name = "byte_offset_to_line_column")]
+fn py_byte_offset_to_line_column(text: &str, offset: u32) -> (usize, usize) {
+    line_column(text, offset)
+}
+
 #[pymodule]
 fn _yaml_edit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDocument>()?;
@@ -1351,5 +1602,7 @@ fn _yaml_edit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEntry>()?;
     m.add_class::<PyAlias>()?;
     m.add_class::<PyTaggedNode>()?;
+    m.add_class::<PyComment>()?;
+    m.add_function(wrap_pyfunction!(py_byte_offset_to_line_column, m)?)?;
     Ok(())
 }

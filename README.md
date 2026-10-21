@@ -145,6 +145,21 @@ print(str(prod["timeout"]))  # the direct entry wins over the merged one
 
 The merged view is read-only; edit through the original `Document` or `Mapping`.
 
+Source positions, comments, and error-tolerant parsing are available for
+tools such as linters:
+
+```python
+src = "name: demo  # the name\n"
+doc = Document.parse(src)
+print(doc["name"].start_position(src))  # 1-based (line, column)
+# (1, 7)
+print([c.content() for c in doc.comments()])
+# ['the name']
+doc, errors = Document.parse_relaxed("a: [1, 2\n")
+print(len(errors))
+# 1
+```
+
 ## Supported value types
 
 Values passed to `set`, `push`, and `insert` may be `str`, `int`, `float`,

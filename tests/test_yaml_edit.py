@@ -2,6 +2,7 @@ import unittest
 
 from yaml_edit import (
     Alias,
+    Comment,
     Document,
     Entry,
     Mapping,
@@ -10,6 +11,7 @@ from yaml_edit import (
     Sequence,
     TaggedNode,
     YamlFile,
+    byte_offset_to_line_column,
 )
 
 
@@ -280,6 +282,11 @@ class ScalarTests(unittest.TestCase):
         doc = Document.parse("name: old\n")
         doc["name"].as_scalar().set_value("new")
         self.assertEqual(doc.get_string("name"), "new")
+
+    def test_block_scalar(self):
+        doc = Document.parse("text: |\n  hi\nplain: x\n")
+        self.assertTrue(doc["text"].as_scalar().is_block())
+        self.assertFalse(doc["plain"].as_scalar().is_block())
 
 
 class NodeTests(unittest.TestCase):
@@ -642,6 +649,92 @@ class OrderingTests(unittest.TestCase):
         self.assertEqual(str(mapping), "first: f\nw: 0\nn: {}\ny: 2\nx: 1\n")
         mapping.reorder_fields(["y", "x"])
         self.assertEqual(mapping.keys(), ["y", "x", "first", "w", "n"])
+
+
+class PositionTests(unittest.TestCase):
+    SRC = "# top\nname: demo  # the name\nlist:\n  - a\n  - b\n"
+
+    def test_node_positions(self):
+        node = Document.parse(self.SRC)["name"]
+        self.assertEqual(node.byte_range(), (12, 16))
+        self.assertEqual(node.start_position(self.SRC), (2, 7))
+        self.assertEqual(node.end_position(self.SRC), (2, 11))
+
+    def test_sequence_and_scalar_positions(self):
+        seq = Document.parse(self.SRC).as_mapping().get_sequence("list")
+        start, end = seq.byte_range()
+        self.assertEqual(self.SRC[start:end], "- a\n  - b\n")
+        self.assertEqual(seq.start_position(self.SRC), (4, 3))
+        self.assertEqual(seq[1].as_scalar().start_position(self.SRC), (5, 5))
+
+    def test_entry_positions(self):
+        entry = Document.parse(self.SRC).as_mapping().entries()[1]
+        start, end = entry.byte_range()
+        self.assertEqual(self.SRC[start:end], "list:\n  - a\n  - b\n")
+        self.assertEqual(entry.start_position(self.SRC), (3, 1))
+
+    def test_document_and_mapping_positions(self):
+        doc = Document.parse(self.SRC)
+        self.assertEqual(doc.byte_range(), (0, len(self.SRC)))
+        self.assertEqual(doc.start_position(self.SRC), (1, 1))
+        self.assertEqual(doc.as_mapping().start_position(self.SRC), (2, 1))
+
+    def test_byte_offset_to_line_column(self):
+        self.assertEqual(byte_offset_to_line_column("a\u00e9\nb", 3), (1, 3))
+        self.assertEqual(byte_offset_to_line_column("a\u00e9\nb", 4), (2, 1))
+
+
+class CommentTests(unittest.TestCase):
+    SRC = "# top\nname: demo  # the name\n"
+
+    def test_document_comments(self):
+        comments = Document.parse(self.SRC).comments()
+        self.assertTrue(all(isinstance(c, Comment) for c in comments))
+        self.assertEqual([c.text() for c in comments], ["# top", "# the name"])
+        self.assertEqual([c.content() for c in comments], ["top", "the name"])
+        self.assertEqual(comments[1].start_position(self.SRC), (2, 13))
+
+    def test_yaml_file_comments(self):
+        comments = YamlFile.parse("# a\nx: 1\n---\n# b\ny: 2\n").comments()
+        self.assertEqual([str(c) for c in comments], ["# a", "# b"])
+
+    def test_set_content(self):
+        doc = Document.parse(self.SRC)
+        doc.comments()[1].set_content("renamed")
+        self.assertEqual(str(doc), "# top\nname: demo  # renamed\n")
+
+    def test_set_text(self):
+        doc = Document.parse(self.SRC)
+        doc.comments()[0].set_text("#header")
+        self.assertEqual(str(doc), "#header\nname: demo  # the name\n")
+
+    def test_set_text_invalid(self):
+        doc = Document.parse(self.SRC)
+        comment = doc.comments()[0]
+        for text in ["no hash", "# two\nlines", "# cr\r"]:
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                comment.set_text(text)
+        with self.assertRaises(ValueError):
+            comment.set_content("two\nlines")
+        self.assertEqual(str(doc), self.SRC)
+
+
+class RelaxedParseTests(unittest.TestCase):
+    def test_document_parse_relaxed_errors(self):
+        doc, errors = Document.parse_relaxed("a: [1, 2\nb: 3\n")
+        self.assertIsInstance(doc, Document)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("Unclosed flow sequence", errors[0])
+
+    def test_document_parse_relaxed_clean(self):
+        doc, errors = Document.parse_relaxed("a: 1\n")
+        self.assertEqual(errors, [])
+        self.assertEqual(doc.keys(), ["a"])
+
+    def test_yaml_file_parse_relaxed(self):
+        stream, errors = YamlFile.parse_relaxed("a: 1\n---\nb: [\n")
+        self.assertEqual(len(stream), 2)
+        self.assertEqual(len(errors), 1)
 
 
 class YamlFileTests(unittest.TestCase):

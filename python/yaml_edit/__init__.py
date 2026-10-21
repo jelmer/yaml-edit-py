@@ -13,6 +13,7 @@ targeted edits that leave the rest of the document untouched.
 
 from ._yaml_edit import (
     Alias,
+    Comment,
     Document,
     Entry,
     Mapping,
@@ -22,10 +23,12 @@ from ._yaml_edit import (
     Sequence,
     TaggedNode,
     YamlFile,
+    byte_offset_to_line_column,
 )
 
 __all__ = [
     "Alias",
+    "Comment",
     "Document",
     "Entry",
     "Mapping",
@@ -35,4 +38,5 @@ __all__ = [
     "Sequence",
     "TaggedNode",
     "YamlFile",
+    "byte_offset_to_line_column",
 ]
