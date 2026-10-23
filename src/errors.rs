@@ -64,6 +64,11 @@ pub(crate) fn io_error(err: std::io::Error, path: &Path) -> PyErr {
                 .strip_suffix(&suffix)
                 .unwrap_or(&message)
                 .to_string();
+            // On Windows the code is a Windows error code, from which
+            // OSError derives the errno when it is passed as `winerror`.
+            #[cfg(windows)]
+            return PyOSError::new_err((code, message, filename, code));
+            #[cfg(not(windows))]
             PyOSError::new_err((code, message, filename))
         }
         None => PyOSError::new_err(format!("{filename}: {err}")),
