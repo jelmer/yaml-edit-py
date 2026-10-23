@@ -492,17 +492,6 @@ impl PyScalarValue {
     }
 }
 
-/// Reject comment text that would span lines, which `Comment::set_text`
-/// panics on.
-fn check_single_line(text: &str) -> PyResult<()> {
-    if text.contains(['\n', '\r']) {
-        return Err(PyValueError::new_err(format!(
-            "comment text must not contain a newline, got {text:?}"
-        )));
-    }
-    Ok(())
-}
-
 /// A comment (`# ...`) in the source text.
 #[pyclass(name = "Comment", unsendable, module = "yaml_edit._yaml_edit")]
 pub(crate) struct PyComment {
@@ -523,28 +512,21 @@ impl PyComment {
 
     /// Replace the full comment text, which must start with `#`.
     ///
-    /// Raises `ValueError` if `text` does not start with `#` or spans more
-    /// than one line. This handle keeps reporting the old text afterwards;
-    /// fetch the comment again through `comments()` to see the new one.
-    fn set_text(&self, text: &str) -> PyResult<()> {
-        if !text.starts_with('#') {
-            return Err(PyValueError::new_err(format!(
-                "comment text must start with '#', got {text:?}"
-            )));
-        }
-        check_single_line(text)?;
-        self.inner.set_text(text);
-        Ok(())
+    /// Raises `ValueError` if `text` does not start with `#`, spans more
+    /// than one line or holds a character YAML does not allow.
+    fn set_text(&mut self, text: &str) -> PyResult<()> {
+        self.inner
+            .set_text(text)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// Replace the comment content, keeping the `# ` prefix.
     ///
-    /// Raises `ValueError` if `content` spans more than one line. As with
-    /// `set_text`, this handle keeps reporting the old text afterwards.
-    fn set_content(&self, content: &str) -> PyResult<()> {
-        check_single_line(content)?;
-        self.inner.set_content(content);
-        Ok(())
+    /// Raises `ValueError` as `set_text` does.
+    fn set_content(&mut self, content: &str) -> PyResult<()> {
+        self.inner
+            .set_content(content)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// The `(start, end)` byte offsets of this comment in the source text.

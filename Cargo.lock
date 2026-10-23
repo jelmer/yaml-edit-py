@@ -168,9 +168,9 @@ checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 
 [[package]]
 name = "yaml-edit"
-version = "0.3.3"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da48bd541c54d6216e92f408fe4a0bdfd6787868cbacd15d7cc764b6abeb5efd"
+checksum = "4c51b74331bfa10feffb8945c197439b4f937b68b9853cd48224d3226be247b8"
 dependencies = [
  "base64",
  "rowan",

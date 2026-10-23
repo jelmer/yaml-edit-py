@@ -720,6 +720,18 @@ class CommentTests(unittest.TestCase):
         doc.comments()[0].set_text("#header")
         self.assertEqual(str(doc), "#header\nname: demo  # the name\n")
 
+    def test_handle_follows_edits(self):
+        doc = Document.parse(self.SRC)
+        comment = doc.comments()[1]
+        comment.set_content("renamed")
+        self.assertEqual(comment.text(), "# renamed")
+
+    def test_set_text_non_printable(self):
+        doc = Document.parse(self.SRC)
+        with self.assertRaises(ValueError):
+            doc.comments()[0].set_text("# x\x01y")
+        self.assertEqual(str(doc), self.SRC)
+
     def test_set_text_invalid(self):
         doc = Document.parse(self.SRC)
         comment = doc.comments()[0]
@@ -1032,6 +1044,16 @@ class PythonValueTests(unittest.TestCase):
                 "custom": {"z": 1},
             },
         )
+
+    def test_to_python_redefined_anchor(self):
+        doc = Document.parse("- &x 1\n- *x\n- &x 2\n- *x\n")
+        self.assertEqual(doc.to_python(), [1, 1, 2, 2])
+
+    def test_to_python_tag_directives(self):
+        stream = YamlFile.parse(
+            "%TAG !y! tag:yaml.org,2002:\n---\ni: !y!int 3\ns: !y!set {a}\n"
+        )
+        self.assertEqual(stream[0].to_python(), {"i": 3, "s": {"a"}})
 
     def test_to_python_empty_document(self):
         self.assertIsNone(Document().to_python())

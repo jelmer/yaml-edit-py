@@ -236,19 +236,7 @@ impl Converter<'_, '_> {
                 Ok(PyList::new(py, items)?.into_any().unbind())
             }
             YamlNode::Alias(alias) => {
-                let name = alias.name();
-                // TODO: `AnchorRegistry::resolve` returns the last definition
-                // of an anchor; an alias should see the last one before it.
-                // The crate does not expose that lookup yet.
-                let target = self
-                    .registry
-                    .resolve(&name)
-                    .ok_or_else(|| ResolveError::new_err(format!("undefined alias {name:?}")))?;
-                let target = YamlNode::from_syntax(target.clone())
-                    .or_else(|| target.children().find_map(YamlNode::from_syntax))
-                    .ok_or_else(|| {
-                        ResolveError::new_err(format!("anchor {name:?} has no value"))
-                    })?;
+                let target = self.registry.resolve_alias(alias).map_err(resolve_error)?;
                 self.convert(&target)
             }
             YamlNode::TaggedNode(tagged) => self.tagged(tagged),
@@ -296,26 +284,6 @@ impl Converter<'_, '_> {
         if let Some(sequence) = tagged.as_sequence() {
             return self.convert(&YamlNode::Sequence(sequence));
         }
-        if tagged
-            .tag()
-            .as_deref()
-            .is_some_and(|tag| is_core_tag(tag, "binary"))
-        {
-            // TODO: the crate reads `!!binary` as a string here; decode it
-            // ourselves until `YamlValue::cast` types it.
-            let text: String = tagged
-                .as_string()
-                .ok_or_else(|| YamlError::new_err("!!binary value is not a scalar"))?
-                .split_whitespace()
-                .collect();
-            let kwargs = PyDict::new(py);
-            kwargs.set_item("validate", true)?;
-            return Ok(py
-                .import("base64")?
-                .call_method("b64decode", (text,), Some(&kwargs))
-                .map_err(|e| YamlError::new_err(format!("invalid !!binary value: {e}")))?
-                .unbind());
-        }
         match YamlValue::cast(tagged.syntax().clone()).map_err(resolve_error)? {
             Some(YamlValue::Scalar(value)) => scalar_to_python(py, &value),
             _ => Err(YamlError::new_err(format!(
@@ -335,15 +303,6 @@ impl Converter<'_, '_> {
         };
         Ok((key, value))
     }
-}
-
-/// Whether `tag` is the YAML core tag `name`, written as `!!name` or in full.
-fn is_core_tag(tag: &str, name: &str) -> bool {
-    let full = tag
-        .strip_prefix("!<")
-        .and_then(|t| t.strip_suffix('>'))
-        .unwrap_or(tag);
-    tag.strip_prefix("!!") == Some(name) || full.strip_prefix("tag:yaml.org,2002:") == Some(name)
 }
 
 /// Convert a scalar to `None`, `bool`, `int`, `float`, `bytes` or `str`
